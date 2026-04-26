@@ -184,6 +184,9 @@ export default function Login({ equipe, voltar, onLogin }: Props) {
                   boxSizing: "border-box",
                   outline: "none",
                   background: "white",
+                  color: "#0f172a",
+                  WebkitTextFillColor: "#0f172a",
+                  caretColor: "#0A3A63",
                 }}
               />
 
@@ -202,6 +205,9 @@ export default function Login({ equipe, voltar, onLogin }: Props) {
                   boxSizing: "border-box",
                   outline: "none",
                   background: "white",
+                  color: "#0f172a",
+                  WebkitTextFillColor: "#0f172a",
+                  caretColor: "#0A3A63",
                 }}
               />
 
