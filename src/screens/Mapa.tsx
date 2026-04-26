@@ -274,8 +274,12 @@ export default function Mapa({
   setTela,
 }: Props) {
   const rotaSalvaInicial = carregarRotaSalva();
+  const origemInicial = rotaSalvaInicial.origem ?? carregarPosicaoAtual();
   const [posicao, setPosicao] = useState<[number, number] | null>(
-    rotaSalvaInicial.origem ?? carregarPosicaoAtual()
+    origemInicial
+  );
+  const [origemRota, setOrigemRota] = useState<[number, number] | null>(
+    origemInicial
   );
   const [carregandoPosicao, setCarregandoPosicao] = useState(posicao === null);
   const [watchId, setWatchId] = useState<number | null>(null);
@@ -315,6 +319,7 @@ export default function Mapa({
           pos.coords.longitude,
         ];
         setPosicao(novaPosicao);
+        setOrigemRota((origemAtual) => origemAtual ?? novaPosicao);
         salvarPosicaoAtual(novaPosicao);
         setCarregandoPosicao(false);
       },
@@ -329,11 +334,11 @@ export default function Mapa({
     localStorage.setItem(
       "fieldpro_rota_planejada",
       JSON.stringify({
-        origem: posicao,
+        origem: origemRota ?? posicao,
         rotaSelecionada,
       })
     );
-  }, [posicao, rotaSelecionada]);
+  }, [origemRota, posicao, rotaSelecionada]);
 
   async function concluirDemanda(demanda: Demanda) {
     if (!["Andamento", "Devolvida"].includes(demanda.status)) {
@@ -385,13 +390,18 @@ export default function Mapa({
   }
 
   async function enviarPontoParaApi(ponto: PontoRotaReal) {
-    await authFetch(`${API_BASE_URL}/rota`, {
+    const resposta = await authFetch(`${API_BASE_URL}/rota`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(ponto),
     });
+
+    if (!resposta.ok) {
+      const dados = await resposta.json().catch(() => ({}));
+      throw new Error(dados.erro || "Erro ao enviar ponto da rota.");
+    }
   }
 
   function iniciarDeslocamento() {
@@ -405,6 +415,8 @@ export default function Mapa({
       return;
     }
 
+    setOrigemRota((origemAtual) => origemAtual ?? posicao);
+
     const id = navigator.geolocation.watchPosition(
       async (pos) => {
         const ponto: PontoRotaReal = {
@@ -417,14 +429,16 @@ export default function Mapa({
         const novaPosicao: [number, number] = [ponto.latitude, ponto.longitude];
         setPosicao(novaPosicao);
         salvarPosicaoAtual(novaPosicao);
-        salvarPontoOffline(ponto);
 
         if (navigator.onLine) {
           try {
             await enviarPontoParaApi(ponto);
           } catch (error) {
             console.error("Erro ao enviar ponto. Mantido offline:", error);
+            salvarPontoOffline(ponto);
           }
+        } else {
+          salvarPontoOffline(ponto);
         }
       },
       (erro) => {
@@ -708,7 +722,7 @@ export default function Mapa({
             })}
 
             {online && (
-              <RotaPorRuas origem={posicao} rotaSelecionada={rotaVisivel} />
+              <RotaPorRuas origem={origemRota ?? posicao} rotaSelecionada={rotaVisivel} />
             )}
           </MapContainer>
         )}

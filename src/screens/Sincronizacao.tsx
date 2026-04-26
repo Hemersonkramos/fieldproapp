@@ -25,6 +25,7 @@ export default function Sincronizacao({ setTela }: Props) {
   const [fotosPendentes, setFotosPendentes] = useState(contarFotosPendentes);
   const [mensagem, setMensagem] = useState("");
   const [sincronizando, setSincronizando] = useState(false);
+  const [progresso, setProgresso] = useState(0);
   const [ultimaSync, setUltimaSync] = useState<string>(
     () => localStorage.getItem("fieldpro_ultima_sync") || "Ainda nao sincronizado"
   );
@@ -52,21 +53,45 @@ export default function Sincronizacao({ setTela }: Props) {
 
     try {
       setSincronizando(true);
+      setProgresso(0);
       setMensagem("Sincronizando dados...");
 
-      for (const ponto of pontosPendentes) {
-        await authFetch(`${API_BASE_URL}/rota`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(ponto),
-        });
+      const levantamentos = carregarLevantamentosPendentes();
+      const totalEtapas = pontosPendentes.length + levantamentos.length;
+      let etapasConcluidas = 0;
+      const atualizarProgresso = () => {
+        etapasConcluidas += 1;
+        setProgresso(totalEtapas === 0 ? 100 : Math.round((etapasConcluidas / totalEtapas) * 100));
+      };
+
+      for (let index = 0; index < pontosPendentes.length; index += 10) {
+        const lote = pontosPendentes.slice(index, index + 10);
+
+        await Promise.all(
+          lote.map(async (ponto) => {
+            const resposta = await authFetch(`${API_BASE_URL}/rota`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(ponto),
+            });
+
+            if (!resposta.ok) {
+              const dados = await resposta.json().catch(() => ({}));
+              throw new Error(dados.erro || "Erro ao sincronizar ponto de rota.");
+            }
+
+            atualizarProgresso();
+          })
+        );
       }
 
-      const levantamentos = carregarLevantamentosPendentes();
-
       for (const levantamento of levantamentos) {
+        setMensagem(
+          `Enviando levantamento ${etapasConcluidas - pontosPendentes.length + 1} de ${levantamentos.length}...`
+        );
+
         const resposta = await authFetch(`${API_BASE_URL}/pontos-coletados`, {
           method: "POST",
           headers: {
@@ -89,6 +114,7 @@ export default function Sincronizacao({ setTela }: Props) {
         }
 
         removerLevantamentoPendente(levantamento.local_id);
+        atualizarProgresso();
       }
 
       salvarPontosRotaPendentes([]);
@@ -103,6 +129,7 @@ export default function Sincronizacao({ setTela }: Props) {
 
       localStorage.setItem("fieldpro_ultima_sync", agora);
       setUltimaSync(agora);
+      setProgresso(100);
       carregarPendencias();
       setMensagem("Sincronizacao concluida com sucesso.");
     } catch (error) {
@@ -115,7 +142,7 @@ export default function Sincronizacao({ setTela }: Props) {
 
   const totalPendencias =
     pontosPendentes.length + levantamentosPendentes + fotosPendentes;
-  const progresso = totalPendencias === 0 ? 100 : 35;
+  const progressoAtual = totalPendencias === 0 ? 100 : progresso;
 
   return (
     <div style={{ minHeight: "100vh", background: "#f1f5f9" }}>
@@ -188,7 +215,7 @@ export default function Sincronizacao({ setTela }: Props) {
               <div
                 style={{
                   height: "100%",
-                  width: `${progresso}%`,
+                  width: `${progressoAtual}%`,
                   background: "#0f172a",
                 }}
               />
