@@ -1,0 +1,19 @@
+{
+  "name": "FieldPro App",
+  "short_name": "FieldPro",
+  "description": "Aplicativo de campo FieldPro",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafc",
+  "theme_color": "#0A3A63",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
