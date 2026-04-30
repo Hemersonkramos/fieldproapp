@@ -184,6 +184,9 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
   const [coletaFotosAtiva, setColetaFotosAtiva] = useState(false);
   const [aguardandoConfirmacaoLocal, setAguardandoConfirmacaoLocal] =
     useState(false);
+  const [tipoMapaLevantamento, setTipoMapaLevantamento] = useState<"satelite" | "normal">(
+    "satelite"
+  );
   const [mensagem, setMensagem] = useState("");
   const [carregando, setCarregando] = useState(false);
 
@@ -589,9 +592,65 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
             }}
           >
             <div style={{ padding: 14 }}>
-              <strong style={{ color: "#0f172a" }}>
-                Mapa dos pontos coletados
-              </strong>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <strong style={{ color: "#0f172a" }}>
+                  Mapa dos pontos coletados
+                </strong>
+
+                <div
+                  style={{
+                    display: "inline-flex",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 999,
+                    overflow: "hidden",
+                    background: "white",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setTipoMapaLevantamento("satelite")}
+                    style={{
+                      border: "none",
+                      padding: "8px 12px",
+                      background:
+                        tipoMapaLevantamento === "satelite" ? "#0A3A63" : "white",
+                      color:
+                        tipoMapaLevantamento === "satelite" ? "white" : "#334155",
+                      fontWeight: 700,
+                      fontSize: 12,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Satelite
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTipoMapaLevantamento("normal")}
+                    style={{
+                      border: "none",
+                      borderLeft: "1px solid #cbd5e1",
+                      padding: "8px 12px",
+                      background:
+                        tipoMapaLevantamento === "normal" ? "#0A3A63" : "white",
+                      color:
+                        tipoMapaLevantamento === "normal" ? "white" : "#334155",
+                      fontWeight: 700,
+                      fontSize: 12,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Mapa
+                  </button>
+                </div>
+              </div>
               <p style={{ margin: "6px 0 0 0", color: "#475569", fontSize: 14 }}>
                 Enquanto voce coleta o ponto atual, o mapa mostra os pontos ja
                 registrados da demanda.
@@ -613,10 +672,20 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
                 maxZoom={22}
                 style={{ height: "100%", width: "100%" }}
               >
-                <TileLayer
-                  attribution="Tiles &copy; Esri"
-                  url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                />
+                {tipoMapaLevantamento === "satelite" ? (
+                  <>
+                    <TileLayer
+                      attribution="Tiles &copy; Esri"
+                      url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                    />
+                    <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
+                  </>
+                ) : (
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                )}
                 {posicaoPonto ? (
                   <CentralizarMapa posicao={posicaoPonto} />
                 ) : pontosColetados.length > 0 ? (

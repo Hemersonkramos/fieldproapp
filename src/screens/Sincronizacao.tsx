@@ -19,12 +19,51 @@ type PontoPendente = ReturnType<typeof carregarPontosRotaPendentes>[number];
 
 const FOTO_MAX_DIMENSAO = 1600;
 const FOTO_QUALIDADE = 0.75;
+const TIMEOUT_PONTO_ROTA_MS = 15000;
+const TIMEOUT_LEVANTAMENTO_MS = 60000;
+const TIMEOUT_FOTO_MS = 10000;
+
+function criarErroTimeout(mensagem: string) {
+  return new Error(mensagem);
+}
+
+async function authFetchComTimeout(input: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await authFetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw criarErroTimeout("Tempo esgotado ao comunicar com a API.");
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
 
 function carregarImagem(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const imagem = new Image();
-    imagem.onload = () => resolve(imagem);
-    imagem.onerror = () => reject(new Error("Erro ao carregar foto pendente."));
+    const timeout = window.setTimeout(() => {
+      imagem.onload = null;
+      imagem.onerror = null;
+      reject(criarErroTimeout("Tempo esgotado ao preparar foto pendente."));
+    }, TIMEOUT_FOTO_MS);
+
+    imagem.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("Erro ao carregar foto pendente."));
+    };
+    imagem.onload = () => {
+      window.clearTimeout(timeout);
+      resolve(imagem);
+    };
     imagem.src = src;
   });
 }
@@ -126,13 +165,13 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
 
       for (const ponto of pontosRotaAtuais) {
         try {
-            const resposta = await authFetch(`${API_BASE_URL}/rota`, {
+            const resposta = await authFetchComTimeout(`${API_BASE_URL}/rota`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
               },
               body: JSON.stringify(ponto),
-            });
+            }, TIMEOUT_PONTO_ROTA_MS);
 
             if (!resposta.ok) {
               const dados = await resposta.json().catch(() => ({}));
@@ -158,8 +197,25 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
         setMensagem(
           `Enviando levantamento ${etapasConcluidas - pontosRotaAtuais.length + 1} de ${levantamentosAtuais.length}...`
         );
+        const fotosPayload = [];
 
-        const resposta = await authFetch(`${API_BASE_URL}/pontos-coletados`, {
+        for (let index = 0; index < levantamento.fotos.length; index += 1) {
+          const foto = levantamento.fotos[index];
+          setMensagem(
+            `Preparando foto ${index + 1} de ${levantamento.fotos.length} do levantamento...`
+          );
+          fotosPayload.push({
+            nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
+            tipo: "image/jpeg",
+            conteudoBase64: await recomprimirBase64Imagem(foto.conteudoBase64),
+          });
+        }
+
+        setMensagem(
+          `Enviando levantamento ${etapasConcluidas - pontosRotaAtuais.length + 1} de ${levantamentosAtuais.length}...`
+        );
+
+        const resposta = await authFetchComTimeout(`${API_BASE_URL}/pontos-coletados`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -170,15 +226,9 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
             latitude: levantamento.latitude,
             longitude: levantamento.longitude,
             observacao: levantamento.observacao,
-            fotos: await Promise.all(
-              levantamento.fotos.map(async (foto, index) => ({
-                nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
-                tipo: "image/jpeg",
-                conteudoBase64: await recomprimirBase64Imagem(foto.conteudoBase64),
-              }))
-            ),
+            fotos: fotosPayload,
           }),
-        });
+        }, TIMEOUT_LEVANTAMENTO_MS);
 
         const dados = await resposta.json();
 

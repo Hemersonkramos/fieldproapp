@@ -688,9 +688,6 @@ export default function Mapa({
                   key={d.id}
                   position={[Number(d.latitude), Number(d.longitude)]}
                   icon={criarIconeDemanda(corDoAlfinete(d))}
-                  eventHandlers={{
-                    click: () => adicionarNaRota(d),
-                  }}
                 >
                   <Popup>
                     <strong>{d.nome}</strong>
@@ -709,6 +706,21 @@ export default function Mapa({
                         marginTop: 10,
                       }}
                     >
+                      <button
+                        onClick={() => adicionarNaRota(d)}
+                        disabled={ordem > 0}
+                        style={{
+                          border: "none",
+                          borderRadius: 10,
+                          background: ordem > 0 ? "#dcfce7" : "#16a34a",
+                          color: ordem > 0 ? "#166534" : "white",
+                          padding: "8px 12px",
+                          cursor: ordem > 0 ? "default" : "pointer",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {ordem > 0 ? "Na rota" : "Adicionar rota"}
+                      </button>
                       <button
                         onClick={() => abrirDemanda(d)}
                         style={{
