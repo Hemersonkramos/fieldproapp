@@ -114,16 +114,18 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
 
       const totalEtapas = pontosRotaAtuais.length + levantamentosAtuais.length;
       let etapasConcluidas = 0;
+      const pontosRotaFalhados: typeof pontosRotaAtuais = [];
       const atualizarProgresso = () => {
         etapasConcluidas += 1;
         setProgresso(totalEtapas === 0 ? 100 : Math.round((etapasConcluidas / totalEtapas) * 100));
       };
 
-      for (let index = 0; index < pontosRotaAtuais.length; index += 10) {
-        const lote = pontosRotaAtuais.slice(index, index + 10);
+      if (pontosRotaAtuais.length > 0) {
+        setMensagem(`Enviando ${pontosRotaAtuais.length} ponto(s) de rota...`);
+      }
 
-        await Promise.all(
-          lote.map(async (ponto) => {
+      for (const ponto of pontosRotaAtuais) {
+        try {
             const resposta = await authFetch(`${API_BASE_URL}/rota`, {
               method: "POST",
               headers: {
@@ -138,7 +140,17 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
             }
 
             atualizarProgresso();
-          })
+        } catch (error) {
+          pontosRotaFalhados.push(ponto);
+          console.error("Erro ao sincronizar ponto de rota:", error);
+        }
+      }
+
+      salvarPontosRotaPendentes(idEquipe, pontosRotaFalhados);
+
+      if (pontosRotaFalhados.length > 0) {
+        throw new Error(
+          `${pontosRotaFalhados.length} ponto(s) de rota nao foram sincronizados. Tente novamente.`
         );
       }
 
@@ -178,8 +190,6 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
         atualizarProgresso();
       }
 
-      salvarPontosRotaPendentes(idEquipe, []);
-
       const agora = new Date().toLocaleString("pt-BR", {
         day: "2-digit",
         month: "2-digit",
@@ -195,7 +205,12 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
       setMensagem("Sincronizacao concluida com sucesso.");
     } catch (error) {
       console.error(error);
-      setMensagem("Erro ao sincronizar. Os dados continuam salvos no aparelho.");
+      carregarPendencias();
+      setMensagem(
+        error instanceof Error
+          ? `Erro ao sincronizar: ${error.message}`
+          : "Erro ao sincronizar. Os dados continuam salvos no aparelho."
+      );
     } finally {
       setSincronizando(false);
     }

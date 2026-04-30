@@ -44,6 +44,7 @@ type PontoRotaReal = OfflineRoutePoint;
 type RoutingProps = {
   origem: [number, number] | null;
   rotaSelecionada: Demanda[];
+  acompanhar: boolean;
 };
 
 type RoutingControlOptionsWithExtras = L.Routing.RoutingControlOptions & {
@@ -201,7 +202,7 @@ function corDoAlfinete(demanda: Demanda) {
   return "#eab308";
 }
 
-function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
+function RotaPorRuas({ origem, rotaSelecionada, acompanhar }: RoutingProps) {
   const map = useMap();
 
   useEffect(() => {
@@ -222,7 +223,7 @@ function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
       routeWhileDragging: false,
       addWaypoints: false,
       draggableWaypoints: false,
-      fitSelectedRoutes: true,
+      fitSelectedRoutes: !acompanhar,
       show: false,
       createMarker: () => null,
       lineOptions: routeLineOptions,
@@ -231,17 +232,28 @@ function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
     return () => {
       map.removeControl(routingControl);
     };
-  }, [map, origem, rotaSelecionada]);
+  }, [acompanhar, map, origem, rotaSelecionada]);
 
   return null;
 }
 
-function CentralizarMapa({ centro }: { centro: [number, number] }) {
+function CentralizarMapa({
+  centro,
+  acompanhar,
+}: {
+  centro: [number, number];
+  acompanhar: boolean;
+}) {
   const map = useMap();
 
   useEffect(() => {
+    if (acompanhar) {
+      map.setView(centro, Math.max(map.getZoom(), 18), { animate: true });
+      return;
+    }
+
     map.setView(centro);
-  }, [centro, map]);
+  }, [acompanhar, centro, map]);
 
   return null;
 }
@@ -466,6 +478,7 @@ export default function Mapa({
     }
 
     setMensagem("Deslocamento iniciado.");
+    setMostrarRota(false);
   }
 
   function pararDeslocamentoPersistente() {
@@ -654,11 +667,11 @@ export default function Mapa({
           </div>
         ) : (
           <MapContainer
-            zoom={14}
+            zoom={deslocamentoAtivo ? 18 : 14}
             center={centroMapa}
             style={{ height: "100%", width: "100%" }}
           >
-            <CentralizarMapa centro={centroMapa} />
+            <CentralizarMapa centro={centroMapa} acompanhar={deslocamentoAtivo} />
             <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
             <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
 
@@ -735,7 +748,11 @@ export default function Mapa({
             })}
 
             {online && (
-              <RotaPorRuas origem={posicao} rotaSelecionada={rotaVisivel} />
+              <RotaPorRuas
+                origem={posicao}
+                rotaSelecionada={rotaVisivel}
+                acompanhar={deslocamentoAtivo}
+              />
             )}
           </MapContainer>
         )}

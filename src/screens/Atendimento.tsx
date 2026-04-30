@@ -151,7 +151,7 @@ function CentralizarMapa({ posicao }: { posicao: [number, number] }) {
   const map = useMap();
 
   useEffect(() => {
-    map.setView(posicao, 17);
+    map.setView(posicao, 21);
   }, [map, posicao]);
 
   return null;
@@ -609,7 +609,8 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
                       ]
                     : [Number(demanda.latitude), Number(demanda.longitude)])
                 }
-                zoom={17}
+                zoom={21}
+                maxZoom={22}
                 style={{ height: "100%", width: "100%" }}
               >
                 <TileLayer
