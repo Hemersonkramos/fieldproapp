@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Splash from "./screens/Splash";
 import SelecionarEquipe from "./screens/SelecionarEquipe";
 import Login from "./screens/Login";
@@ -8,8 +8,19 @@ import Atendimento from "./screens/Atendimento";
 import Mapa from "./screens/Mapa";
 import Sincronizacao from "./screens/Sincronizacao";
 import Fotos from "./screens/Fotos";
-import { carregarDemandasCache, salvarDemandasCache } from "./lib/offlineStorage";
-import { API_BASE_URL, authFetch } from "./lib/api";
+import {
+  carregarDemandasCache,
+  carregarPontosRotaPendentes,
+  carregarPosicaoAtual,
+  carregarRotaPlanejada,
+  salvarDemandasCache,
+  salvarPontosRotaPendentes,
+  salvarPosicaoAtual,
+  type OfflineRoutePoint,
+} from "./lib/offlineStorage";
+import { API_BASE_URL, authFetch, obterToken } from "./lib/api";
+
+const INTERVALO_PONTO_ROTA_MS = 10 * 60 * 1000;
 
 export type Tela =
   | "splash"
@@ -61,26 +72,6 @@ export type Demanda = {
   status: "Andamento" | "Concluida" | "Devolvida" | "Finalizada";
 };
 
-type RotaPlanejada = {
-  rotaSelecionada?: Demanda[];
-};
-
-function carregarRotaPlanejadaInicial(): Demanda[] {
-  const rotaSalva = localStorage.getItem("fieldpro_rota_planejada");
-
-  if (!rotaSalva) {
-    return [];
-  }
-
-  try {
-    const dados = JSON.parse(rotaSalva) as RotaPlanejada;
-    return Array.isArray(dados.rotaSelecionada) ? dados.rotaSelecionada : [];
-  } catch (error) {
-    console.error("Erro ao carregar rota planejada:", error);
-    return [];
-  }
-}
-
 export default function App() {
   const [tela, setTela] = useState<Tela>("splash");
   const [usuario, setUsuario] = useState<UsuarioLogado | null>(null);
@@ -90,9 +81,156 @@ export default function App() {
   const [equipeSelecionada, setEquipeSelecionada] =
     useState<Equipe | null>(null);
 
-  const [rotaSelecionada, setRotaSelecionada] = useState<Demanda[]>(
-    carregarRotaPlanejadaInicial
+  const [rotaSelecionada, setRotaSelecionada] = useState<Demanda[]>([]);
+  const [posicaoAtual, setPosicaoAtual] = useState<[number, number] | null>(
+    carregarPosicaoAtual()
   );
+  const [watchId, setWatchId] = useState<number | null>(null);
+  const ultimoPontoRotaEmRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!usuario?.id_equipe) {
+      return;
+    }
+
+    const atualizarPresenca = () => {
+      void authFetch(`${API_BASE_URL}/presenca/equipe`, {
+        method: "POST",
+      }).catch((error) => {
+        console.error("Erro ao atualizar presenca da equipe:", error);
+      });
+    };
+
+    const encerrarPresenca = () => {
+      const token = obterToken();
+
+      if (!token) {
+        return;
+      }
+
+      void fetch(`${API_BASE_URL}/presenca/equipe`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+
+    atualizarPresenca();
+
+    const intervalo = window.setInterval(atualizarPresenca, 60 * 1000);
+    window.addEventListener("pagehide", encerrarPresenca);
+
+    return () => {
+      window.clearInterval(intervalo);
+      window.removeEventListener("pagehide", encerrarPresenca);
+      encerrarPresenca();
+    };
+  }, [usuario?.id_equipe]);
+
+  useEffect(() => {
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [watchId]);
+
+  function salvarPontoRotaOffline(ponto: OfflineRoutePoint) {
+    const idEquipe = Number(ponto.id_equipe);
+    const pontosSalvos = carregarPontosRotaPendentes(idEquipe);
+    pontosSalvos.push(ponto);
+    salvarPontosRotaPendentes(idEquipe, pontosSalvos);
+  }
+
+  async function enviarPontoRota(ponto: OfflineRoutePoint) {
+    const resposta = await authFetch(`${API_BASE_URL}/rota`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(ponto),
+    });
+
+    if (!resposta.ok) {
+      const dados = await resposta.json().catch(() => ({}));
+      throw new Error(dados.erro || "Erro ao enviar ponto da rota.");
+    }
+  }
+
+  function iniciarDeslocamento() {
+    if (!usuario?.id_equipe) {
+      return "sem_usuario" as const;
+    }
+
+    if (!navigator.geolocation) {
+      return "gps_indisponivel" as const;
+    }
+
+    if (watchId !== null) {
+      return "ja_iniciado" as const;
+    }
+
+    const idEquipe = usuario.id_equipe;
+    const id = navigator.geolocation.watchPosition(
+      async (pos) => {
+        const agora = Date.now();
+        const ponto: OfflineRoutePoint = {
+          id_equipe: idEquipe,
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          data_hora: new Date().toISOString(),
+        };
+        const novaPosicao: [number, number] = [ponto.latitude, ponto.longitude];
+
+        setPosicaoAtual(novaPosicao);
+        salvarPosicaoAtual(novaPosicao);
+
+        if (
+          ultimoPontoRotaEmRef.current !== null &&
+          agora - ultimoPontoRotaEmRef.current < INTERVALO_PONTO_ROTA_MS
+        ) {
+          return;
+        }
+
+        ultimoPontoRotaEmRef.current = agora;
+
+        if (navigator.onLine) {
+          try {
+            await enviarPontoRota(ponto);
+          } catch (error) {
+            console.error("Erro ao enviar ponto. Mantido offline:", error);
+            salvarPontoRotaOffline(ponto);
+          }
+        } else {
+          salvarPontoRotaOffline(ponto);
+        }
+      },
+      (erro) => {
+        console.error("Erro GPS:", erro);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 5000,
+      }
+    );
+
+    setWatchId(id);
+    return "iniciado" as const;
+  }
+
+  function pararDeslocamento() {
+    if (watchId === null) {
+      return false;
+    }
+
+    navigator.geolocation.clearWatch(watchId);
+    setWatchId(null);
+    ultimoPontoRotaEmRef.current = null;
+    return true;
+  }
 
   useEffect(() => {
     const idEquipe = usuario?.id_equipe;
@@ -131,6 +269,16 @@ export default function App() {
     return () => {
       ativo = false;
     };
+  }, [usuario?.id_equipe]);
+
+  useEffect(() => {
+    if (!usuario?.id_equipe) {
+      setRotaSelecionada([]);
+      return;
+    }
+
+    const rotaSalva = carregarRotaPlanejada(usuario.id_equipe);
+    setRotaSelecionada(rotaSalva.rotaSelecionada ?? []);
   }, [usuario?.id_equipe]);
 
   function atualizarDemanda(demandaAtualizada: Demanda) {
@@ -194,6 +342,10 @@ export default function App() {
           demandas={demandas}
           rotaSelecionada={rotaSelecionada}
           setRotaSelecionada={setRotaSelecionada}
+          posicaoAtual={posicaoAtual}
+          deslocamentoAtivo={watchId !== null}
+          iniciarDeslocamento={iniciarDeslocamento}
+          pararDeslocamento={pararDeslocamento}
           abrirDemanda={abrirDemanda}
           irParaDemandas={() => setTela("demandas")}
           setTela={setTela}
@@ -216,6 +368,10 @@ export default function App() {
           demandas={demandas}
           rotaSelecionada={rotaSelecionada}
           setRotaSelecionada={setRotaSelecionada}
+          posicaoAtual={posicaoAtual}
+          deslocamentoAtivo={watchId !== null}
+          iniciarDeslocamento={iniciarDeslocamento}
+          pararDeslocamento={pararDeslocamento}
           atualizarDemanda={atualizarDemanda}
           abrirDemanda={abrirDemanda}
           setTela={setTela}
@@ -238,7 +394,7 @@ export default function App() {
       )}
 
       {tela === "sincronizacao" && (
-        <Sincronizacao setTela={setTela} />
+        <Sincronizacao usuario={usuario} setTela={setTela} />
       )}
     </>
   );

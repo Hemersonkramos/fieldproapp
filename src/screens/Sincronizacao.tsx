@@ -8,16 +8,60 @@ import {
   salvarPontosRotaPendentes,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch } from "../lib/api";
+import type { UsuarioLogado } from "../App";
 
 type Props = {
+  usuario: UsuarioLogado | null;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
 };
 
 type PontoPendente = ReturnType<typeof carregarPontosRotaPendentes>[number];
 
-export default function Sincronizacao({ setTela }: Props) {
+const FOTO_MAX_DIMENSAO = 1600;
+const FOTO_QUALIDADE = 0.75;
+
+function carregarImagem(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const imagem = new Image();
+    imagem.onload = () => resolve(imagem);
+    imagem.onerror = () => reject(new Error("Erro ao carregar foto pendente."));
+    imagem.src = src;
+  });
+}
+
+async function recomprimirBase64Imagem(conteudoBase64: string) {
+  if (!conteudoBase64.startsWith("data:image/")) {
+    return conteudoBase64;
+  }
+
+  try {
+    const imagem = await carregarImagem(conteudoBase64);
+    const maiorLado = Math.max(imagem.naturalWidth, imagem.naturalHeight);
+    const escala = maiorLado > FOTO_MAX_DIMENSAO ? FOTO_MAX_DIMENSAO / maiorLado : 1;
+    const largura = Math.max(1, Math.round(imagem.naturalWidth * escala));
+    const altura = Math.max(1, Math.round(imagem.naturalHeight * escala));
+    const canvas = document.createElement("canvas");
+    canvas.width = largura;
+    canvas.height = altura;
+
+    const contexto = canvas.getContext("2d");
+
+    if (!contexto) {
+      return conteudoBase64;
+    }
+
+    contexto.drawImage(imagem, 0, 0, largura, altura);
+    return canvas.toDataURL("image/jpeg", FOTO_QUALIDADE);
+  } catch (error) {
+    console.error("Erro ao recomprimir foto pendente:", error);
+    return conteudoBase64;
+  }
+}
+
+export default function Sincronizacao({ usuario, setTela }: Props) {
+  const idEquipe = usuario?.id_equipe ?? 0;
   const [pontosPendentes, setPontosPendentes] = useState<PontoPendente[]>(
-    carregarPontosRotaPendentes
+    () => (idEquipe ? carregarPontosRotaPendentes(idEquipe) : [])
   );
   const [levantamentosPendentes, setLevantamentosPendentes] = useState(
     () => carregarLevantamentosPendentes().length
@@ -31,21 +75,33 @@ export default function Sincronizacao({ setTela }: Props) {
   );
 
   function carregarPendencias() {
-    setPontosPendentes(carregarPontosRotaPendentes());
+    setPontosPendentes(idEquipe ? carregarPontosRotaPendentes(idEquipe) : []);
     setLevantamentosPendentes(carregarLevantamentosPendentes().length);
     setFotosPendentes(contarFotosPendentes());
   }
 
   async function sincronizarAgora() {
+    if (!idEquipe) {
+      setMensagem("Equipe nao identificada. Faca login novamente.");
+      return;
+    }
+
     if (!navigator.onLine) {
       setMensagem("Sem internet. Tente sincronizar quando estiver online.");
       return;
     }
 
+    const pontosRotaAtuais = carregarPontosRotaPendentes(idEquipe);
+    const levantamentosAtuais = carregarLevantamentosPendentes();
+    setPontosPendentes(pontosRotaAtuais);
+    setLevantamentosPendentes(levantamentosAtuais.length);
+    setFotosPendentes(
+      levantamentosAtuais.reduce((total, levantamento) => total + levantamento.fotos.length, 0)
+    );
+
     if (
-      pontosPendentes.length === 0 &&
-      levantamentosPendentes === 0 &&
-      fotosPendentes === 0
+      pontosRotaAtuais.length === 0 &&
+      levantamentosAtuais.length === 0
     ) {
       setMensagem("Nao existem dados pendentes para sincronizar.");
       return;
@@ -56,16 +112,15 @@ export default function Sincronizacao({ setTela }: Props) {
       setProgresso(0);
       setMensagem("Sincronizando dados...");
 
-      const levantamentos = carregarLevantamentosPendentes();
-      const totalEtapas = pontosPendentes.length + levantamentos.length;
+      const totalEtapas = pontosRotaAtuais.length + levantamentosAtuais.length;
       let etapasConcluidas = 0;
       const atualizarProgresso = () => {
         etapasConcluidas += 1;
         setProgresso(totalEtapas === 0 ? 100 : Math.round((etapasConcluidas / totalEtapas) * 100));
       };
 
-      for (let index = 0; index < pontosPendentes.length; index += 10) {
-        const lote = pontosPendentes.slice(index, index + 10);
+      for (let index = 0; index < pontosRotaAtuais.length; index += 10) {
+        const lote = pontosRotaAtuais.slice(index, index + 10);
 
         await Promise.all(
           lote.map(async (ponto) => {
@@ -87,9 +142,9 @@ export default function Sincronizacao({ setTela }: Props) {
         );
       }
 
-      for (const levantamento of levantamentos) {
+      for (const levantamento of levantamentosAtuais) {
         setMensagem(
-          `Enviando levantamento ${etapasConcluidas - pontosPendentes.length + 1} de ${levantamentos.length}...`
+          `Enviando levantamento ${etapasConcluidas - pontosRotaAtuais.length + 1} de ${levantamentosAtuais.length}...`
         );
 
         const resposta = await authFetch(`${API_BASE_URL}/pontos-coletados`, {
@@ -103,7 +158,13 @@ export default function Sincronizacao({ setTela }: Props) {
             latitude: levantamento.latitude,
             longitude: levantamento.longitude,
             observacao: levantamento.observacao,
-            fotos: levantamento.fotos,
+            fotos: await Promise.all(
+              levantamento.fotos.map(async (foto, index) => ({
+                nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
+                tipo: "image/jpeg",
+                conteudoBase64: await recomprimirBase64Imagem(foto.conteudoBase64),
+              }))
+            ),
           }),
         });
 
@@ -117,7 +178,7 @@ export default function Sincronizacao({ setTela }: Props) {
         atualizarProgresso();
       }
 
-      salvarPontosRotaPendentes([]);
+      salvarPontosRotaPendentes(idEquipe, []);
 
       const agora = new Date().toLocaleString("pt-BR", {
         day: "2-digit",

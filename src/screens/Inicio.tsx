@@ -12,7 +12,6 @@ import "leaflet-routing-machine";
 import type { Demanda, UsuarioLogado } from "../App";
 import BottomNav from "../components/BottomNav";
 import { carregarPosicaoAtual, salvarPosicaoAtual } from "../lib/offlineStorage";
-import { API_BASE_URL, authFetch } from "../lib/api";
 
 type LeafletDefaultIconPrototype = typeof L.Icon.Default.prototype & {
   _getIconUrl?: string;
@@ -23,6 +22,10 @@ type Props = {
   demandas: Demanda[];
   rotaSelecionada: Demanda[];
   setRotaSelecionada: React.Dispatch<React.SetStateAction<Demanda[]>>;
+  posicaoAtual: [number, number] | null;
+  deslocamentoAtivo: boolean;
+  iniciarDeslocamento: () => "iniciado" | "ja_iniciado" | "gps_indisponivel" | "sem_usuario";
+  pararDeslocamento: () => boolean;
   abrirDemanda: (demanda: Demanda) => void;
   irParaDemandas: () => void;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
@@ -224,10 +227,13 @@ export default function Inicio({
   usuario,
   demandas,
   rotaSelecionada,
+  posicaoAtual,
+  deslocamentoAtivo,
+  iniciarDeslocamento,
+  pararDeslocamento,
   irParaDemandas,
   setTela,
 }: Props) {
-  const [watchId, setWatchId] = useState<number | null>(null);
   const [mensagem, setMensagem] = useState("");
   const [tipoMensagem, setTipoMensagem] = useState<"sucesso" | "erro" | "info">(
     "info"
@@ -259,6 +265,12 @@ export default function Inicio({
 
     return prazo < hoje && d.status !== "Finalizada";
   }).length;
+
+  useEffect(() => {
+    if (posicaoAtual) {
+      setPosicao(posicaoAtual);
+    }
+  }, [posicaoAtual]);
 
   useEffect(() => {
     navigator.geolocation.getCurrentPosition(
@@ -320,60 +332,29 @@ export default function Inicio({
     setTipoMensagem(tipo);
   }
 
-  async function iniciarDeslocamento() {
-    if (!navigator.geolocation) {
+  function iniciarDeslocamentoTela() {
+    const resultado = iniciarDeslocamento();
+
+    if (resultado === "gps_indisponivel") {
       mostrarMensagem("GPS nao disponivel neste aparelho.", "erro");
       return;
     }
 
-    if (watchId !== null) {
+    if (resultado === "sem_usuario") {
+      mostrarMensagem("Equipe nao identificada. Faca login novamente.", "erro");
+      return;
+    }
+
+    if (resultado === "ja_iniciado") {
       mostrarMensagem("O deslocamento ja foi iniciado.", "info");
       return;
     }
 
-    const id = navigator.geolocation.watchPosition(
-      async (pos) => {
-        const { latitude, longitude } = pos.coords;
-
-        const novaPosicao: [number, number] = [latitude, longitude];
-        setPosicao(novaPosicao);
-        salvarPosicaoAtual(novaPosicao);
-
-        try {
-          await authFetch(`${API_BASE_URL}/rota`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              id_equipe: usuario.id_equipe,
-              latitude,
-              longitude,
-            }),
-          });
-        } catch (error) {
-          console.error("Erro ao enviar rota:", error);
-        }
-      },
-      (erro) => {
-        console.error(erro);
-        mostrarMensagem("Nao foi possivel acessar sua localizacao.", "erro");
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 5000,
-      }
-    );
-
-    setWatchId(id);
     mostrarMensagem("Deslocamento iniciado com sucesso.", "sucesso");
   }
 
-  function pararDeslocamento() {
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      setWatchId(null);
+  function pararDeslocamentoTela() {
+    if (pararDeslocamento()) {
       mostrarMensagem("Deslocamento finalizado.", "info");
     }
   }
@@ -486,7 +467,7 @@ export default function Inicio({
 
         <p style={{ marginTop: 6, marginBottom: 0 }}>
           {total} demandas • {emergenciais} urgentes • {foraPrazo} atrasadas •{" "}
-          {watchId ? "GPS ativo" : "pronto para iniciar"}
+          {deslocamentoAtivo ? "GPS ativo" : "pronto para iniciar"}
         </p>
       </div>
 
@@ -685,9 +666,9 @@ export default function Inicio({
             Iniciar atendimento
           </button>
 
-          {watchId ? (
+          {deslocamentoAtivo ? (
             <button
-              onClick={pararDeslocamento}
+              onClick={pararDeslocamentoTela}
               style={{
                 flex: 1,
                 height: 70,
@@ -703,7 +684,7 @@ export default function Inicio({
             </button>
           ) : (
             <button
-              onClick={iniciarDeslocamento}
+              onClick={iniciarDeslocamentoTela}
               style={{
                 flex: 1,
                 height: 70,

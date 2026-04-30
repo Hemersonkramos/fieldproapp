@@ -13,8 +13,11 @@ import BottomNav from "../components/BottomNav";
 import {
   carregarPosicaoAtual,
   carregarPontosRotaPendentes,
+  limparRotaPlanejada,
   salvarPosicaoAtual,
   salvarPontosRotaPendentes,
+  salvarRotaPlanejada,
+  type OfflineRoutePoint,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch } from "../lib/api";
 
@@ -27,22 +30,16 @@ type Props = {
   demandas: Demanda[];
   rotaSelecionada: Demanda[];
   setRotaSelecionada: Dispatch<SetStateAction<Demanda[]>>;
+  posicaoAtual: [number, number] | null;
+  deslocamentoAtivo: boolean;
+  iniciarDeslocamento: () => "iniciado" | "ja_iniciado" | "gps_indisponivel" | "sem_usuario";
+  pararDeslocamento: () => boolean;
   atualizarDemanda: (demanda: Demanda) => void;
   abrirDemanda: (demanda: Demanda) => void;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
 };
 
-type PontoRotaReal = {
-  id_equipe: number;
-  latitude: number;
-  longitude: number;
-  data_hora: string;
-};
-
-type RotaSalva = {
-  origem?: [number, number] | null;
-  rotaSelecionada?: Demanda[];
-};
+type PontoRotaReal = OfflineRoutePoint;
 
 type RoutingProps = {
   origem: [number, number] | null;
@@ -204,21 +201,6 @@ function corDoAlfinete(demanda: Demanda) {
   return "#eab308";
 }
 
-function carregarRotaSalva(): RotaSalva {
-  const rotaSalva = localStorage.getItem("fieldpro_rota_planejada");
-
-  if (!rotaSalva) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(rotaSalva) as RotaSalva;
-  } catch (error) {
-    console.error("Erro ao carregar rota planejada:", error);
-    return {};
-  }
-}
-
 function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
   const map = useMap();
 
@@ -269,17 +251,17 @@ export default function Mapa({
   demandas,
   rotaSelecionada,
   setRotaSelecionada,
+  posicaoAtual,
+  deslocamentoAtivo,
+  iniciarDeslocamento: iniciarDeslocamentoGlobal,
+  pararDeslocamento: pararDeslocamentoGlobal,
   atualizarDemanda,
   abrirDemanda,
   setTela,
 }: Props) {
-  const rotaSalvaInicial = carregarRotaSalva();
-  const origemInicial = rotaSalvaInicial.origem ?? carregarPosicaoAtual();
+  const posicaoInicial = carregarPosicaoAtual();
   const [posicao, setPosicao] = useState<[number, number] | null>(
-    origemInicial
-  );
-  const [origemRota, setOrigemRota] = useState<[number, number] | null>(
-    origemInicial
+    posicaoInicial
   );
   const [carregandoPosicao, setCarregandoPosicao] = useState(posicao === null);
   const [watchId, setWatchId] = useState<number | null>(null);
@@ -296,6 +278,13 @@ export default function Mapa({
       return [...prev, demanda];
     });
   }
+
+  useEffect(() => {
+    if (posicaoAtual) {
+      setPosicao(posicaoAtual);
+      setCarregandoPosicao(false);
+    }
+  }, [posicaoAtual]);
 
   useEffect(() => {
     function atualizarStatus() {
@@ -319,7 +308,6 @@ export default function Mapa({
           pos.coords.longitude,
         ];
         setPosicao(novaPosicao);
-        setOrigemRota((origemAtual) => origemAtual ?? novaPosicao);
         salvarPosicaoAtual(novaPosicao);
         setCarregandoPosicao(false);
       },
@@ -331,14 +319,11 @@ export default function Mapa({
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(
-      "fieldpro_rota_planejada",
-      JSON.stringify({
-        origem: origemRota ?? posicao,
-        rotaSelecionada,
-      })
-    );
-  }, [origemRota, posicao, rotaSelecionada]);
+    salvarRotaPlanejada(usuario.id_equipe, {
+      origem: posicao,
+      rotaSelecionada,
+    });
+  }, [posicao, rotaSelecionada, usuario.id_equipe]);
 
   async function concluirDemanda(demanda: Demanda) {
     if (!["Andamento", "Devolvida"].includes(demanda.status)) {
@@ -380,16 +365,16 @@ export default function Mapa({
 
   function limparRota() {
     setRotaSelecionada([]);
-    localStorage.removeItem("fieldpro_rota_planejada");
+    limparRotaPlanejada(usuario.id_equipe);
   }
 
   function salvarPontoOffline(ponto: PontoRotaReal) {
-    const pontosSalvos = carregarPontosRotaPendentes();
+    const pontosSalvos = carregarPontosRotaPendentes(usuario.id_equipe);
     pontosSalvos.push(ponto);
-    salvarPontosRotaPendentes(pontosSalvos);
+    salvarPontosRotaPendentes(usuario.id_equipe, pontosSalvos);
   }
 
-  async function enviarPontoParaApi(ponto: PontoRotaReal) {
+  async function enviarPontoParaApi(ponto: OfflineRoutePoint) {
     const resposta = await authFetch(`${API_BASE_URL}/rota`, {
       method: "POST",
       headers: {
@@ -414,8 +399,6 @@ export default function Mapa({
       setMensagem("Deslocamento já iniciado.");
       return;
     }
-
-    setOrigemRota((origemAtual) => origemAtual ?? posicao);
 
     const id = navigator.geolocation.watchPosition(
       async (pos) => {
@@ -464,8 +447,38 @@ export default function Mapa({
     }
   }
 
+  function iniciarDeslocamentoPersistente() {
+    const resultado = iniciarDeslocamentoGlobal();
+
+    if (resultado === "gps_indisponivel") {
+      setMensagem("GPS nÃ£o disponÃ­vel neste aparelho.");
+      return;
+    }
+
+    if (resultado === "sem_usuario") {
+      setMensagem("Equipe nÃ£o identificada. FaÃ§a login novamente.");
+      return;
+    }
+
+    if (resultado === "ja_iniciado") {
+      setMensagem("Deslocamento jÃ¡ iniciado.");
+      return;
+    }
+
+    setMensagem("Deslocamento iniciado.");
+  }
+
+  function pararDeslocamentoPersistente() {
+    if (pararDeslocamentoGlobal()) {
+      setMensagem("Deslocamento finalizado.");
+    }
+  }
+
+  void iniciarDeslocamento;
+  void pararDeslocamento;
+
   async function sincronizarPontos() {
-    const pontosSalvos = carregarPontosRotaPendentes();
+    const pontosSalvos = carregarPontosRotaPendentes(usuario.id_equipe);
 
     if (pontosSalvos.length === 0) {
       setMensagem("Não existem pontos pendentes para sincronizar.");
@@ -482,7 +495,7 @@ export default function Mapa({
         await enviarPontoParaApi(ponto);
       }
 
-      salvarPontosRotaPendentes([]);
+      salvarPontosRotaPendentes(usuario.id_equipe, []);
       setMensagem("Pontos sincronizados com sucesso.");
     } catch (error) {
       console.error("Erro ao sincronizar:", error);
@@ -523,7 +536,7 @@ export default function Mapa({
     window.open(`https://www.google.com/maps/dir/?${params.toString()}`, "_blank");
   }
 
-  const pontosPendentes = carregarPontosRotaPendentes();
+  const pontosPendentes = carregarPontosRotaPendentes(usuario.id_equipe);
   const demandasVisiveis = demandas.filter((d) => d.status !== "Finalizada");
   const rotaVisivel = rotaSelecionada.filter((d) => d.status !== "Finalizada");
   const centroMapa: [number, number] = posicao
@@ -722,7 +735,7 @@ export default function Mapa({
             })}
 
             {online && (
-              <RotaPorRuas origem={origemRota ?? posicao} rotaSelecionada={rotaVisivel} />
+              <RotaPorRuas origem={posicao} rotaSelecionada={rotaVisivel} />
             )}
           </MapContainer>
         )}
@@ -845,9 +858,9 @@ export default function Mapa({
           Limpar rota
         </button>
 
-        {watchId ? (
+        {deslocamentoAtivo ? (
           <button
-            onClick={pararDeslocamento}
+            onClick={pararDeslocamentoPersistente}
             style={{
               height: 42,
               borderRadius: 12,
@@ -863,7 +876,7 @@ export default function Mapa({
           </button>
         ) : (
           <button
-            onClick={iniciarDeslocamento}
+            onClick={iniciarDeslocamentoPersistente}
             style={{
               height: 42,
               borderRadius: 12,

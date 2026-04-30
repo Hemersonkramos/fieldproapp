@@ -35,6 +35,9 @@ type FotoPayload = {
   conteudoBase64: string;
 };
 
+const FOTO_MAX_DIMENSAO = 1600;
+const FOTO_QUALIDADE = 0.75;
+
 function criarIconePonto(cor: string, texto: string) {
   return L.divIcon({
     className: "custom-point-marker",
@@ -91,11 +94,64 @@ function arquivoParaBase64(arquivo: File) {
   });
 }
 
+function carregarImagem(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const imagem = new Image();
+    imagem.onload = () => resolve(imagem);
+    imagem.onerror = () => reject(new Error("Erro ao carregar a foto."));
+    imagem.src = url;
+  });
+}
+
+async function comprimirFotoParaBase64(arquivo: File) {
+  if (!arquivo.type.startsWith("image/")) {
+    return arquivoParaBase64(arquivo);
+  }
+
+  const url = URL.createObjectURL(arquivo);
+
+  try {
+    const imagem = await carregarImagem(url);
+    const maiorLado = Math.max(imagem.naturalWidth, imagem.naturalHeight);
+    const escala = maiorLado > FOTO_MAX_DIMENSAO ? FOTO_MAX_DIMENSAO / maiorLado : 1;
+    const largura = Math.max(1, Math.round(imagem.naturalWidth * escala));
+    const altura = Math.max(1, Math.round(imagem.naturalHeight * escala));
+    const canvas = document.createElement("canvas");
+    canvas.width = largura;
+    canvas.height = altura;
+
+    const contexto = canvas.getContext("2d");
+
+    if (!contexto) {
+      return arquivoParaBase64(arquivo);
+    }
+
+    contexto.drawImage(imagem, 0, 0, largura, altura);
+
+    return canvas.toDataURL("image/jpeg", FOTO_QUALIDADE);
+  } catch (error) {
+    console.error("Erro ao comprimir foto:", error);
+    return arquivoParaBase64(arquivo);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function montarFotosPayload(fotos: File[]): Promise<FotoPayload[]> {
+  return Promise.all(
+    fotos.map(async (foto, index) => ({
+      nome: foto.name || `foto-${Date.now()}-${index + 1}.jpg`,
+      tipo: "image/jpeg",
+      conteudoBase64: await comprimirFotoParaBase64(foto),
+    }))
+  );
+}
+
 function CentralizarMapa({ posicao }: { posicao: [number, number] }) {
   const map = useMap();
 
   useEffect(() => {
-    map.setView(posicao, 18);
+    map.setView(posicao, 17);
   }, [map, posicao]);
 
   return null;
@@ -279,6 +335,11 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
       return;
     }
 
+    if (coletaFotosAtiva) {
+      setMensagem("Encerre a coleta de fotos antes de salvar o ponto.");
+      return;
+    }
+
     if (fotos.length === 0) {
       setMensagem("Adicione pelo menos uma foto.");
       return;
@@ -288,13 +349,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
       setCarregando(true);
       setMensagem("Salvando...");
 
-      const fotosPayload: FotoPayload[] = await Promise.all(
-        fotos.map(async (foto) => ({
-          nome: foto.name,
-          tipo: foto.type || "image/jpeg",
-          conteudoBase64: await arquivoParaBase64(foto),
-        }))
-      );
+      const fotosPayload = await montarFotosPayload(fotos);
 
       const payload = {
         id_solicitacao: demanda.id,
@@ -371,13 +426,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
     } catch (error) {
       console.error(error);
       const localId = Number(`${Date.now()}${proximaOrdem}`);
-      const fotosPayload: FotoPayload[] = await Promise.all(
-        fotos.map(async (foto) => ({
-          nome: foto.name,
-          tipo: foto.type || "image/jpeg",
-          conteudoBase64: await arquivoParaBase64(foto),
-        }))
-      );
+      const fotosPayload = await montarFotosPayload(fotos);
 
       adicionarLevantamentoPendente({
         local_id: localId,
@@ -549,7 +598,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
               </p>
             </div>
 
-            <div style={{ height: 260 }}>
+            <div style={{ height: "min(52vh, 520px)", minHeight: 380 }}>
               <MapContainer
                 center={
                   posicaoPonto ||
@@ -560,7 +609,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
                       ]
                     : [Number(demanda.latitude), Number(demanda.longitude)])
                 }
-                zoom={18}
+                zoom={17}
                 style={{ height: "100%", width: "100%" }}
               >
                 <TileLayer

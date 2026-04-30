@@ -49,6 +49,11 @@ export type OfflineRoutePoint = {
   data_hora: string;
 };
 
+export type PlannedRoute = {
+  origem?: [number, number] | null;
+  rotaSelecionada?: Demanda[];
+};
+
 function lerJson<T>(chave: string, fallback: T): T {
   const valor = localStorage.getItem(chave);
 
@@ -78,6 +83,37 @@ function chaveAnexos(idSolicitacao: number) {
 
 function chavePontos(idSolicitacao: number) {
   return `fieldpro_pontos_${idSolicitacao}`;
+}
+
+function chaveRotaPlanejada(idEquipe: number) {
+  return `fieldpro_rota_planejada_${idEquipe}`;
+}
+
+function chavePontosRotaPendentes(idEquipe: number) {
+  return `fieldpro_rota_real_${idEquipe}`;
+}
+
+function pontosIguais(a: OfflineRoutePoint, b: OfflineRoutePoint) {
+  return (
+    Number(a.id_equipe) === Number(b.id_equipe) &&
+    Number(a.latitude) === Number(b.latitude) &&
+    Number(a.longitude) === Number(b.longitude) &&
+    a.data_hora === b.data_hora
+  );
+}
+
+function removerPontosRotaLegadosDaEquipe(idEquipe: number) {
+  const pontosLegados = lerJson<OfflineRoutePoint[]>("fieldpro_rota_real", []);
+  const restantes = pontosLegados.filter(
+    (ponto) => Number(ponto.id_equipe) !== Number(idEquipe)
+  );
+
+  if (restantes.length === 0) {
+    localStorage.removeItem("fieldpro_rota_real");
+    return;
+  }
+
+  salvarJson("fieldpro_rota_real", restantes);
 }
 
 export function carregarDemandasCache(idEquipe: number) {
@@ -149,12 +185,59 @@ export function contarFotosPendentes() {
   );
 }
 
-export function carregarPontosRotaPendentes() {
-  return lerJson<OfflineRoutePoint[]>("fieldpro_rota_real", []);
+export function carregarRotaPlanejada(idEquipe: number) {
+  const rota = lerJson<PlannedRoute>(chaveRotaPlanejada(idEquipe), {});
+
+  if (rota.rotaSelecionada) {
+    return {
+      ...rota,
+      rotaSelecionada: rota.rotaSelecionada.filter(
+        (demanda) => Number(demanda.id_equipe) === Number(idEquipe)
+      ),
+    };
+  }
+
+  const rotaLegada = lerJson<PlannedRoute>("fieldpro_rota_planejada", {});
+
+  return {
+    ...rotaLegada,
+    rotaSelecionada: (rotaLegada.rotaSelecionada ?? []).filter(
+      (demanda) => Number(demanda.id_equipe) === Number(idEquipe)
+    ),
+  };
 }
 
-export function salvarPontosRotaPendentes(pontos: OfflineRoutePoint[]) {
-  salvarJson("fieldpro_rota_real", pontos);
+export function salvarRotaPlanejada(idEquipe: number, rota: PlannedRoute) {
+  salvarJson(chaveRotaPlanejada(idEquipe), {
+    ...rota,
+    rotaSelecionada: (rota.rotaSelecionada ?? []).filter(
+      (demanda) => Number(demanda.id_equipe) === Number(idEquipe)
+    ),
+  });
+}
+
+export function limparRotaPlanejada(idEquipe: number) {
+  localStorage.removeItem(chaveRotaPlanejada(idEquipe));
+}
+
+export function carregarPontosRotaPendentes(idEquipe: number) {
+  const pontos = lerJson<OfflineRoutePoint[]>(chavePontosRotaPendentes(idEquipe), []);
+  const pontosLegados = lerJson<OfflineRoutePoint[]>("fieldpro_rota_real", []).filter(
+    (ponto) => Number(ponto.id_equipe) === Number(idEquipe)
+  );
+
+  return [...pontos, ...pontosLegados].filter(
+    (ponto, index, todos) => todos.findIndex((item) => pontosIguais(item, ponto)) === index
+  );
+}
+
+export function salvarPontosRotaPendentes(idEquipe: number, pontos: OfflineRoutePoint[]) {
+  removerPontosRotaLegadosDaEquipe(idEquipe);
+
+  salvarJson(
+    chavePontosRotaPendentes(idEquipe),
+    pontos.filter((ponto) => Number(ponto.id_equipe) === Number(idEquipe))
+  );
 }
 
 export function salvarPosicaoAtual(posicao: [number, number] | null) {
