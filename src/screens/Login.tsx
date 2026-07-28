@@ -7,15 +7,26 @@ type Props = {
   equipe: Equipe | null;
   voltar: () => void;
   onLogin: (usuario: UsuarioLogado) => void;
+  usuarioDemonstracao?: UsuarioLogado;
 };
 
-export default function Login({ equipe, voltar, onLogin }: Props) {
+export default function Login({
+  equipe,
+  voltar,
+  onLogin,
+  usuarioDemonstracao,
+}: Props) {
   const [user, setUser] = useState("");
   const [password, setPassword] = useState("");
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
 
   async function fazerLogin() {
+    if (usuarioDemonstracao) {
+      onLogin(usuarioDemonstracao);
+      return;
+    }
+
     try {
       setErro("");
       setCarregando(true);

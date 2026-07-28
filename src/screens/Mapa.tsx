@@ -37,6 +37,7 @@ type Props = {
   atualizarDemanda: (demanda: Demanda) => void;
   abrirDemanda: (demanda: Demanda) => void;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
+  modoDemonstracao?: boolean;
 };
 
 type PontoRotaReal = OfflineRoutePoint;
@@ -270,6 +271,7 @@ export default function Mapa({
   atualizarDemanda,
   abrirDemanda,
   setTela,
+  modoDemonstracao = false,
 }: Props) {
   const posicaoInicial = carregarPosicaoAtual();
   const [posicao, setPosicao] = useState<[number, number] | null>(
@@ -348,6 +350,11 @@ export default function Mapa({
       return;
     }
 
+    if (modoDemonstracao) {
+      setMensagem("Demanda concluída apenas na demonstração local.");
+      return;
+    }
+
     try {
       const resposta = await authFetch(
         `${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`,
@@ -387,6 +394,10 @@ export default function Mapa({
   }
 
   async function enviarPontoParaApi(ponto: OfflineRoutePoint) {
+    if (modoDemonstracao) {
+      return;
+    }
+
     const resposta = await authFetch(`${API_BASE_URL}/rota`, {
       method: "POST",
       headers: {

@@ -13,6 +13,7 @@ import type { UsuarioLogado } from "../App";
 type Props = {
   usuario: UsuarioLogado | null;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
+  modoDemonstracao?: boolean;
 };
 
 type PontoPendente = ReturnType<typeof carregarPontosRotaPendentes>[number];
@@ -97,7 +98,11 @@ async function recomprimirBase64Imagem(conteudoBase64: string) {
   }
 }
 
-export default function Sincronizacao({ usuario, setTela }: Props) {
+export default function Sincronizacao({
+  usuario,
+  setTela,
+  modoDemonstracao = false,
+}: Props) {
   const idEquipe = usuario?.id_equipe ?? 0;
   const [pontosPendentes, setPontosPendentes] = useState<PontoPendente[]>(
     () => (idEquipe ? carregarPontosRotaPendentes(idEquipe) : [])
@@ -120,6 +125,11 @@ export default function Sincronizacao({ usuario, setTela }: Props) {
   }
 
   async function sincronizarAgora() {
+    if (modoDemonstracao) {
+      setMensagem("Modo de demonstração: nenhuma informação será sincronizada.");
+      return;
+    }
+
     if (!idEquipe) {
       setMensagem("Equipe nao identificada. Faca login novamente.");
       return;

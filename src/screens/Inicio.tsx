@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, RefreshCw, Route } from "lucide-react";
+import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import {
   MapContainer,
   Marker,
@@ -24,10 +24,7 @@ type Props = {
   setRotaSelecionada: React.Dispatch<React.SetStateAction<Demanda[]>>;
   posicaoAtual: [number, number] | null;
   deslocamentoAtivo: boolean;
-  iniciarDeslocamento: () => "iniciado" | "ja_iniciado" | "gps_indisponivel" | "sem_usuario";
-  pararDeslocamento: () => boolean;
   abrirDemanda: (demanda: Demanda) => void;
-  irParaDemandas: () => void;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
 };
 
@@ -229,15 +226,8 @@ export default function Inicio({
   rotaSelecionada,
   posicaoAtual,
   deslocamentoAtivo,
-  iniciarDeslocamento,
-  pararDeslocamento,
-  irParaDemandas,
   setTela,
 }: Props) {
-  const [mensagem, setMensagem] = useState("");
-  const [tipoMensagem, setTipoMensagem] = useState<"sucesso" | "erro" | "info">(
-    "info"
-  );
   const [posicao, setPosicao] = useState<[number, number] | null>(
     carregarPosicaoAtual()
   );
@@ -313,84 +303,6 @@ export default function Inicio({
       window.removeEventListener("offline", atualizarStatus);
     };
   }, []);
-
-  useEffect(() => {
-    if (!mensagem) return;
-
-    const timer = setTimeout(() => {
-      setMensagem("");
-    }, 3000);
-
-    return () => clearTimeout(timer);
-  }, [mensagem]);
-
-  function mostrarMensagem(
-    texto: string,
-    tipo: "sucesso" | "erro" | "info" = "info"
-  ) {
-    setMensagem(texto);
-    setTipoMensagem(tipo);
-  }
-
-  function iniciarDeslocamentoTela() {
-    const resultado = iniciarDeslocamento();
-
-    if (resultado === "gps_indisponivel") {
-      mostrarMensagem("GPS nao disponivel neste aparelho.", "erro");
-      return;
-    }
-
-    if (resultado === "sem_usuario") {
-      mostrarMensagem("Equipe nao identificada. Faca login novamente.", "erro");
-      return;
-    }
-
-    if (resultado === "ja_iniciado") {
-      mostrarMensagem("O deslocamento ja foi iniciado.", "info");
-      return;
-    }
-
-    mostrarMensagem("Deslocamento iniciado com sucesso.", "sucesso");
-  }
-
-  function pararDeslocamentoTela() {
-    if (pararDeslocamento()) {
-      mostrarMensagem("Deslocamento finalizado.", "info");
-    }
-  }
-
-  function iniciarAtendimento() {
-    if (demandas.length === 0) {
-      mostrarMensagem("Nao ha demandas disponiveis para atendimento.", "erro");
-      return;
-    }
-
-    irParaDemandas();
-  }
-
-  function estiloMensagem() {
-    if (tipoMensagem === "sucesso") {
-      return {
-        background: "#dcfce7",
-        color: "#166534",
-        border: "1px solid #bbf7d0",
-      };
-    }
-
-    if (tipoMensagem === "erro") {
-      return {
-        background: "#fee2e2",
-        color: "#b91c1c",
-        border: "1px solid #fecaca",
-      };
-    }
-
-    return {
-      background: "#dbeafe",
-      color: "#1d4ed8",
-      border: "1px solid #bfdbfe",
-    };
-  }
 
   function cardDashboard(
     titulo: string,
@@ -472,21 +384,6 @@ export default function Inicio({
       </div>
 
       <div style={{ padding: 16 }}>
-        {mensagem ? (
-          <div
-            style={{
-              ...estiloMensagem(),
-              padding: 12,
-              borderRadius: 14,
-              marginBottom: 16,
-              fontSize: 14,
-              fontWeight: 600,
-            }}
-          >
-            {mensagem}
-          </div>
-        ) : null}
-
         <div
           style={{
             display: "grid",
@@ -643,73 +540,6 @@ export default function Inicio({
           </div>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            flexDirection: isCompact ? "column" : "row",
-            gap: 12,
-          }}
-        >
-          <button
-            onClick={iniciarAtendimento}
-            style={{
-              flex: 1,
-              height: 70,
-              borderRadius: 20,
-              border: "none",
-              background: "#0A3A63",
-              color: "white",
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            Iniciar atendimento
-          </button>
-
-          {deslocamentoAtivo ? (
-            <button
-              onClick={pararDeslocamentoTela}
-              style={{
-                flex: 1,
-                height: 70,
-                borderRadius: 20,
-                border: "none",
-                background: "#dc2626",
-                color: "white",
-                fontWeight: "bold",
-                cursor: "pointer",
-              }}
-            >
-              Parar deslocamento
-            </button>
-          ) : (
-            <button
-              onClick={iniciarDeslocamentoTela}
-              style={{
-                flex: 1,
-                height: 70,
-                borderRadius: 20,
-                border: "1px solid #cbd5e1",
-                background: "#f8fafc",
-                color: "#0f172a",
-                fontWeight: "bold",
-                cursor: "pointer",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                }}
-              >
-                <Route size={18} />
-                Iniciar deslocamento
-              </div>
-            </button>
-          )}
-        </div>
       </div>
 
       <BottomNav telaAtual="inicio" setTela={setTela} />

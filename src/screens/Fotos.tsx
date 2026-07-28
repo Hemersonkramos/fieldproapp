@@ -17,7 +17,31 @@ type PontoColetado = CachedPoint;
 type Props = {
   demanda: Demanda;
   voltar: () => void;
+  modoDemonstracao?: boolean;
 };
+
+const PONTOS_GALERIA_DEMONSTRACAO: PontoColetado[] = [
+  {
+    id: -101,
+    id_solicitacao: -1,
+    ordem_ponto: 1,
+    latitude: "-23.550520",
+    longitude: "-46.633308",
+    data_coleta: new Date().toISOString(),
+    observacao: "Ponto de demonstração 1",
+    fotos: [],
+  },
+  {
+    id: -102,
+    id_solicitacao: -1,
+    ordem_ponto: 2,
+    latitude: "-23.550520",
+    longitude: "-46.633298",
+    data_coleta: new Date().toISOString(),
+    observacao: "Ponto de demonstração 2",
+    fotos: [],
+  },
+];
 
 function criarIconePonto(cor: string, texto: string) {
   return L.divIcon({
@@ -54,7 +78,11 @@ function criarIconePonto(cor: string, texto: string) {
   });
 }
 
-export default function Fotos({ demanda, voltar }: Props) {
+export default function Fotos({
+  demanda,
+  voltar,
+  modoDemonstracao = false,
+}: Props) {
   const [pontos, setPontos] = useState<PontoColetado[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
@@ -64,6 +92,13 @@ export default function Fotos({ demanda, voltar }: Props) {
     let ativo = true;
 
     async function carregarGaleria() {
+      if (modoDemonstracao) {
+        setPontos(PONTOS_GALERIA_DEMONSTRACAO);
+        setCarregando(false);
+        setErro("");
+        return;
+      }
+
       try {
         if (ativo) {
           setCarregando(true);
@@ -103,7 +138,7 @@ export default function Fotos({ demanda, voltar }: Props) {
     return () => {
       ativo = false;
     };
-  }, [demanda.id]);
+  }, [demanda.id, modoDemonstracao]);
 
   function formatarData(data: string) {
     if (!data) return "-";
@@ -121,6 +156,17 @@ export default function Fotos({ demanda, voltar }: Props) {
     const confirmar = window.confirm("Tem certeza que deseja excluir esta foto?");
 
     if (!confirmar) {
+      return;
+    }
+
+    if (modoDemonstracao) {
+      setPontos((prev) =>
+        prev.map((ponto) =>
+          ponto.id === foto.id_ponto_coletado
+            ? { ...ponto, fotos: ponto.fotos.filter((item) => item.id !== foto.id) }
+            : ponto
+        )
+      );
       return;
     }
 
@@ -173,6 +219,11 @@ export default function Fotos({ demanda, voltar }: Props) {
     );
 
     if (!confirmar) {
+      return;
+    }
+
+    if (modoDemonstracao) {
+      setPontos((prev) => prev.filter((item) => item.id !== ponto.id));
       return;
     }
 

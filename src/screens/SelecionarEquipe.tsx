@@ -6,14 +6,23 @@ import { API_BASE_URL } from "../lib/api";
 type Props = {
   selecionar: (equipe: Equipe) => void;
   voltar: () => void;
+  equipesDemonstracao?: Equipe[];
 };
 
-export default function SelecionarEquipe({ selecionar, voltar }: Props) {
-  const [equipes, setEquipes] = useState<Equipe[]>([]);
+export default function SelecionarEquipe({
+  selecionar,
+  voltar,
+  equipesDemonstracao,
+}: Props) {
+  const [equipes, setEquipes] = useState<Equipe[]>(equipesDemonstracao ?? []);
   const [busca, setBusca] = useState("");
   const [isCompact, setIsCompact] = useState(() => window.innerWidth <= 520);
 
   useEffect(() => {
+    if (equipesDemonstracao) {
+      return;
+    }
+
     function atualizarViewport() {
       setIsCompact(window.innerWidth <= 520);
     }
@@ -23,7 +32,7 @@ export default function SelecionarEquipe({ selecionar, voltar }: Props) {
     return () => {
       window.removeEventListener("resize", atualizarViewport);
     };
-  }, []);
+  }, [equipesDemonstracao]);
 
   useEffect(() => {
     let ativo = true;

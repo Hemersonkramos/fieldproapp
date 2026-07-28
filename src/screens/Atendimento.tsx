@@ -7,6 +7,7 @@ import {
   useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Demanda } from "../App";
 import {
   adicionarLevantamentoPendente,
@@ -27,6 +28,7 @@ type Props = {
   demanda: Demanda;
   voltar: () => void;
   abrirGaleria: () => void;
+  modoDemonstracao?: boolean;
 };
 
 type FotoPayload = {
@@ -37,6 +39,32 @@ type FotoPayload = {
 
 const FOTO_MAX_DIMENSAO = 1600;
 const FOTO_QUALIDADE = 0.75;
+const MAPA_ZOOM_INICIAL = 21;
+const MAPA_ZOOM_MAXIMO = 24;
+const SATELITE_ZOOM_NATIVO_MAXIMO = 19;
+const MAPA_RUAS_ZOOM_NATIVO_MAXIMO = 19;
+const PONTOS_DEMONSTRACAO: PontoColetado[] = [
+  {
+    id: -101,
+    id_solicitacao: -1,
+    ordem_ponto: 1,
+    latitude: "-23.550520",
+    longitude: "-46.633308",
+    data_coleta: new Date().toISOString(),
+    observacao: "Ponto de demonstração 1",
+    fotos: [],
+  },
+  {
+    id: -102,
+    id_solicitacao: -1,
+    ordem_ponto: 2,
+    latitude: "-23.550520",
+    longitude: "-46.633298",
+    data_coleta: new Date().toISOString(),
+    observacao: "Ponto de demonstração 2, aproximadamente 1 metro do primeiro",
+    fotos: [],
+  },
+];
 
 function criarIconePonto(cor: string, texto: string) {
   return L.divIcon({
@@ -151,7 +179,7 @@ function CentralizarMapa({ posicao }: { posicao: [number, number] }) {
   const map = useMap();
 
   useEffect(() => {
-    map.setView(posicao, 21);
+    map.setView(posicao, MAPA_ZOOM_INICIAL);
   }, [map, posicao]);
 
   return null;
@@ -171,8 +199,14 @@ function SelecionarPontoNoMapa({
   return null;
 }
 
-export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
+export default function Atendimento({
+  demanda,
+  voltar,
+  abrirGaleria,
+  modoDemonstracao = false,
+}: Props) {
   const inputFotosRef = useRef<HTMLInputElement | null>(null);
+  const coletaLocalizacaoIdRef = useRef(0);
 
   const [anexos, setAnexos] = useState<Anexo[]>([]);
   const [pontosColetados, setPontosColetados] = useState<PontoColetado[]>([]);
@@ -181,19 +215,42 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
   const [observacao, setObservacao] = useState("");
   const [fotos, setFotos] = useState<File[]>([]);
   const [proximaOrdem, setProximaOrdem] = useState(1);
+  const [coletaPontoIniciada, setColetaPontoIniciada] = useState(false);
   const [coletaFotosAtiva, setColetaFotosAtiva] = useState(false);
   const [aguardandoConfirmacaoLocal, setAguardandoConfirmacaoLocal] =
     useState(false);
   const [tipoMapaLevantamento, setTipoMapaLevantamento] = useState<"satelite" | "normal">(
     "satelite"
   );
+  const [mapaTelaCheia, setMapaTelaCheia] = useState(false);
+  const [painelMapaRecolhido, setPainelMapaRecolhido] = useState(false);
   const [mensagem, setMensagem] = useState("");
   const [carregando, setCarregando] = useState(false);
+
+  useEffect(() => {
+    if (!mapaTelaCheia) {
+      return;
+    }
+
+    const overflowAnterior = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = overflowAnterior;
+    };
+  }, [mapaTelaCheia]);
 
   useEffect(() => {
     let ativo = true;
 
     async function carregarDados() {
+      if (modoDemonstracao) {
+        setAnexos([]);
+        setPontosColetados(PONTOS_DEMONSTRACAO);
+        setProximaOrdem(PONTOS_DEMONSTRACAO.length + 1);
+        return;
+      }
+
       try {
         const [anexosResposta, pontosResposta] = await Promise.all([
           authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/anexos`),
@@ -247,21 +304,29 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
     return () => {
       ativo = false;
     };
-  }, [demanda.id]);
+  }, [demanda.id, modoDemonstracao]);
 
   function coletarPonto() {
     if (!navigator.geolocation) {
+      setColetaPontoIniciada(false);
       setMensagem("GPS nao disponivel.");
       return;
     }
 
+    setColetaPontoIniciada(true);
     setColetaFotosAtiva(false);
     setAguardandoConfirmacaoLocal(false);
     setFotos([]);
     setMensagem("Coletando localizacao do ponto...");
+    coletaLocalizacaoIdRef.current += 1;
+    const coletaAtualId = coletaLocalizacaoIdRef.current;
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (coletaLocalizacaoIdRef.current !== coletaAtualId) {
+          return;
+        }
+
         setLatitude(pos.coords.latitude);
         setLongitude(pos.coords.longitude);
         setAguardandoConfirmacaoLocal(true);
@@ -270,6 +335,11 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
         );
       },
       () => {
+        if (coletaLocalizacaoIdRef.current !== coletaAtualId) {
+          return;
+        }
+
+        setColetaPontoIniciada(false);
         setMensagem("Erro ao obter localizacao.");
       },
       {
@@ -277,6 +347,18 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
         timeout: 10000,
       }
     );
+  }
+
+  function cancelarColetaPonto() {
+    coletaLocalizacaoIdRef.current += 1;
+    setColetaPontoIniciada(false);
+    setColetaFotosAtiva(false);
+    setAguardandoConfirmacaoLocal(false);
+    setLatitude(null);
+    setLongitude(null);
+    setObservacao("");
+    setFotos([]);
+    setMensagem("Coleta cancelada. Você pode iniciar um novo ponto.");
   }
 
   function confirmarLocalDoPonto() {
@@ -365,7 +447,9 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
 
       let idPonto = Number(`${Date.now()}${proximaOrdem}`);
 
-      if (navigator.onLine) {
+      if (modoDemonstracao) {
+        idPonto = -Number(`${Date.now()}${proximaOrdem}`);
+      } else if (navigator.onLine) {
         const resposta = await authFetch(`${API_BASE_URL}/pontos-coletados`, {
           method: "POST",
           headers: {
@@ -415,9 +499,11 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
       setPontosColetados((prev) => [novoPonto, ...prev]);
       adicionarPontoCache(demanda.id, novoPonto);
       setMensagem(
-        navigator.onLine
+        navigator.onLine && !modoDemonstracao
           ? `Ponto ${proximaOrdem} salvo com sucesso.`
-          : `Ponto ${proximaOrdem} salvo no aparelho para sincronizar depois.`
+          : modoDemonstracao
+            ? `Ponto ${proximaOrdem} salvo somente nesta demonstração local.`
+            : `Ponto ${proximaOrdem} salvo no aparelho para sincronizar depois.`
       );
       setFotos([]);
       setLatitude(null);
@@ -425,6 +511,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
       setObservacao("");
       setColetaFotosAtiva(false);
       setAguardandoConfirmacaoLocal(false);
+      setColetaPontoIniciada(false);
       setProximaOrdem((prev) => prev + 1);
     } catch (error) {
       console.error(error);
@@ -468,6 +555,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
       setObservacao("");
       setColetaFotosAtiva(false);
       setAguardandoConfirmacaoLocal(false);
+      setColetaPontoIniciada(false);
       setProximaOrdem((prev) => prev + 1);
       setMensagem("Sem conexao. O ponto e as fotos foram salvos no aparelho.");
     } finally {
@@ -476,6 +564,11 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
   }
 
   async function concluir() {
+    if (modoDemonstracao) {
+      setMensagem("Demonstração concluída. Nenhum dado foi enviado.");
+      return;
+    }
+
     await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`, {
       method: "PUT",
     });
@@ -486,6 +579,80 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
 
   const posicaoPonto: [number, number] | null =
     latitude !== null && longitude !== null ? [latitude, longitude] : null;
+
+  function renderizarMapa() {
+    return (
+      <MapContainer
+        center={
+          posicaoPonto ||
+          (pontosColetados.length > 0
+            ? [
+                Number(pontosColetados[0].latitude),
+                Number(pontosColetados[0].longitude),
+              ]
+            : [Number(demanda.latitude), Number(demanda.longitude)])
+        }
+        zoom={MAPA_ZOOM_INICIAL}
+        maxZoom={MAPA_ZOOM_MAXIMO}
+        style={{ height: "100%", width: "100%" }}
+      >
+        {tipoMapaLevantamento === "satelite" ? (
+          <>
+            <TileLayer
+              attribution="Tiles &copy; Esri"
+              maxNativeZoom={SATELITE_ZOOM_NATIVO_MAXIMO}
+              maxZoom={MAPA_ZOOM_MAXIMO}
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            />
+            <TileLayer
+              maxNativeZoom={SATELITE_ZOOM_NATIVO_MAXIMO}
+              maxZoom={MAPA_ZOOM_MAXIMO}
+              url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+            />
+          </>
+        ) : (
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            maxNativeZoom={MAPA_RUAS_ZOOM_NATIVO_MAXIMO}
+            maxZoom={MAPA_ZOOM_MAXIMO}
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+        )}
+        {posicaoPonto ? (
+          <CentralizarMapa posicao={posicaoPonto} />
+        ) : pontosColetados.length > 0 ? (
+          <CentralizarMapa
+            posicao={[
+              Number(pontosColetados[0].latitude),
+              Number(pontosColetados[0].longitude),
+            ]}
+          />
+        ) : null}
+        {posicaoPonto && aguardandoConfirmacaoLocal && (
+          <SelecionarPontoNoMapa aoSelecionar={atualizarPosicaoManual} />
+        )}
+
+        {pontosColetados.map((ponto, index) => {
+          const ordem = ponto.ordem_ponto || pontosColetados.length - index;
+
+          return (
+            <Marker
+              key={ponto.id}
+              position={[Number(ponto.latitude), Number(ponto.longitude)]}
+              icon={criarIconePonto("#16a34a", String(ordem))}
+            />
+          );
+        })}
+
+        {posicaoPonto && (
+          <Marker
+            position={posicaoPonto}
+            icon={criarIconePonto("#1a73e8", String(proximaOrdem))}
+          />
+        )}
+      </MapContainer>
+    );
+  }
 
   return (
     <div style={{ background: "#f1f5f9", minHeight: "100vh" }}>
@@ -558,19 +725,22 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
           </div>
 
           <button
-            onClick={coletarPonto}
+            onClick={
+              coletaPontoIniciada ? cancelarColetaPonto : coletarPonto
+            }
             style={{
               marginTop: 20,
               width: "100%",
               height: 50,
               borderRadius: 16,
-              background: "#0A3A63",
+              background: coletaPontoIniciada ? "#dc2626" : "#0A3A63",
               color: "white",
               fontWeight: "bold",
               border: "none",
+              cursor: "pointer",
             }}
           >
-            Coletar ponto
+            {coletaPontoIniciada ? "Cancelar coleta" : "Coletar ponto"}
           </button>
 
           <input
@@ -604,6 +774,26 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
                 <strong style={{ color: "#0f172a" }}>
                   Mapa dos pontos coletados
                 </strong>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPainelMapaRecolhido(false);
+                    setMapaTelaCheia(true);
+                  }}
+                  style={{
+                    marginLeft: "auto",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 12,
+                    background: "white",
+                    color: "#0A3A63",
+                    padding: "8px 12px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Abrir em tela cheia
+                </button>
 
                 <div
                   style={{
@@ -658,67 +848,7 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
             </div>
 
             <div style={{ height: "min(52vh, 520px)", minHeight: 380 }}>
-              <MapContainer
-                center={
-                  posicaoPonto ||
-                  (pontosColetados.length > 0
-                    ? [
-                        Number(pontosColetados[0].latitude),
-                        Number(pontosColetados[0].longitude),
-                      ]
-                    : [Number(demanda.latitude), Number(demanda.longitude)])
-                }
-                zoom={21}
-                maxZoom={22}
-                style={{ height: "100%", width: "100%" }}
-              >
-                {tipoMapaLevantamento === "satelite" ? (
-                  <>
-                    <TileLayer
-                      attribution="Tiles &copy; Esri"
-                      url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                    />
-                    <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
-                  </>
-                ) : (
-                  <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-                )}
-                {posicaoPonto ? (
-                  <CentralizarMapa posicao={posicaoPonto} />
-                ) : pontosColetados.length > 0 ? (
-                  <CentralizarMapa
-                    posicao={[
-                      Number(pontosColetados[0].latitude),
-                      Number(pontosColetados[0].longitude),
-                    ]}
-                  />
-                ) : null}
-                {posicaoPonto && aguardandoConfirmacaoLocal && (
-                  <SelecionarPontoNoMapa aoSelecionar={atualizarPosicaoManual} />
-                )}
-
-                {pontosColetados.map((ponto, index) => {
-                  const ordem = ponto.ordem_ponto || pontosColetados.length - index;
-
-                  return (
-                    <Marker
-                      key={ponto.id}
-                      position={[Number(ponto.latitude), Number(ponto.longitude)]}
-                      icon={criarIconePonto("#16a34a", String(ordem))}
-                    />
-                  );
-                })}
-
-                {posicaoPonto && (
-                  <Marker
-                    position={posicaoPonto}
-                    icon={criarIconePonto("#1a73e8", String(proximaOrdem))}
-                  />
-                )}
-              </MapContainer>
+              {renderizarMapa()}
             </div>
 
             {posicaoPonto && (
@@ -870,6 +1000,335 @@ export default function Atendimento({ demanda, voltar, abrirGaleria }: Props) {
         </div>
       </div>
 
+      {mapaTelaCheia && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Coleta de pontos em tela cheia"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            display: "flex",
+            background: "#0f172a",
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
+            {renderizarMapa()}
+
+            <div
+              style={{
+                position: "absolute",
+                top: 16,
+                left: 56,
+                zIndex: 1000,
+                borderRadius: 14,
+                padding: "10px 14px",
+                background: "rgba(2, 27, 51, 0.9)",
+                color: "white",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+              }}
+            >
+              <strong>Ponto {proximaOrdem}</strong>
+              <div style={{ marginTop: 2, fontSize: 12, opacity: 0.85 }}>
+                Aproxime e toque no mapa para ajustar a posição.
+              </div>
+            </div>
+
+            {painelMapaRecolhido && (
+              <button
+                type="button"
+                onClick={() => setPainelMapaRecolhido(false)}
+                aria-label="Abrir controles da coleta"
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  right: 0,
+                  zIndex: 1000,
+                  transform: "translateY(-50%)",
+                  width: 48,
+                  height: 72,
+                  border: "none",
+                  borderRadius: "16px 0 0 16px",
+                  background: "#f8fafc",
+                  color: "#0A3A63",
+                  boxShadow: "-6px 0 18px rgba(15, 23, 42, 0.24)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <ChevronLeft size={28} strokeWidth={2.5} />
+              </button>
+            )}
+          </div>
+
+          <aside
+            style={{
+              boxSizing: "border-box",
+              width: painelMapaRecolhido
+                ? 0
+                : "clamp(280px, 30vw, 380px)",
+              background: "#f8fafc",
+              padding: painelMapaRecolhido ? 0 : 18,
+              overflowY: painelMapaRecolhido ? "hidden" : "auto",
+              overflowX: "hidden",
+              boxShadow: "-8px 0 24px rgba(15, 23, 42, 0.22)",
+              transition: "width 220ms ease, padding 220ms ease",
+            }}
+          >
+            <div
+              style={{
+                display: painelMapaRecolhido ? "none" : "block",
+                minWidth: 244,
+              }}
+            >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                marginBottom: 18,
+              }}
+            >
+              <div>
+                <strong style={{ color: "#0f172a", fontSize: 18 }}>
+                  Coleta de pontos
+                </strong>
+                <div style={{ color: "#64748b", fontSize: 13, marginTop: 3 }}>
+                  {pontosColetados.length} ponto(s) registrado(s)
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setPainelMapaRecolhido(true)}
+                  aria-label="Recolher controles"
+                  title="Recolher controles"
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 12,
+                    border: "1px solid #cbd5e1",
+                    background: "white",
+                    color: "#0A3A63",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <ChevronRight size={24} strokeWidth={2.5} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMapaTelaCheia(false)}
+                  aria-label="Fechar tela cheia"
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 12,
+                    border: "1px solid #cbd5e1",
+                    background: "white",
+                    color: "#0f172a",
+                    fontSize: 22,
+                    cursor: "pointer",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setTipoMapaLevantamento((atual) =>
+                  atual === "satelite" ? "normal" : "satelite"
+                )
+              }
+              style={{
+                width: "100%",
+                height: 46,
+                borderRadius: 14,
+                border: "1px solid #0A3A63",
+                background: "white",
+                color: "#0A3A63",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              {tipoMapaLevantamento === "satelite"
+                ? "Usar mapa"
+                : "Usar satélite"}
+            </button>
+
+            <div
+              style={{
+                margin: "14px 0",
+                padding: 12,
+                borderRadius: 14,
+                background: "#e2e8f0",
+                color: "#334155",
+                fontSize: 13,
+                lineHeight: 1.5,
+              }}
+            >
+              {posicaoPonto ? (
+                <>
+                  Lat: {latitude}
+                  <br />
+                  Lng: {longitude}
+                </>
+              ) : (
+                "Clique em Coletar ponto para obter a posição atual."
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={
+                coletaPontoIniciada ? cancelarColetaPonto : coletarPonto
+              }
+              style={{
+                width: "100%",
+                height: 50,
+                borderRadius: 14,
+                border: "none",
+                background: coletaPontoIniciada ? "#dc2626" : "#0A3A63",
+                color: "white",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              {coletaPontoIniciada ? "Cancelar coleta" : "Coletar ponto"}
+            </button>
+
+            {aguardandoConfirmacaoLocal && (
+              <button
+                type="button"
+                onClick={confirmarLocalDoPonto}
+                style={{
+                  marginTop: 10,
+                  width: "100%",
+                  height: 50,
+                  borderRadius: 14,
+                  border: "none",
+                  background: "#16a34a",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                }}
+              >
+                Confirmar local do ponto
+              </button>
+            )}
+
+            {coletaFotosAtiva && (
+              <>
+                <button
+                  type="button"
+                  onClick={abrirCameraParaUmaFoto}
+                  style={{
+                    marginTop: 10,
+                    width: "100%",
+                    height: 50,
+                    borderRadius: 14,
+                    border: "none",
+                    background: "#2563eb",
+                    color: "white",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Coletar foto
+                </button>
+                <button
+                  type="button"
+                  onClick={encerrarColetaDeFotos}
+                  style={{
+                    marginTop: 10,
+                    width: "100%",
+                    height: 46,
+                    borderRadius: 14,
+                    border: "1px solid #fed7aa",
+                    background: "#fff7ed",
+                    color: "#9a3412",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}
+                >
+                  Encerrar coleta de fotos
+                </button>
+              </>
+            )}
+
+            {posicaoPonto && (
+              <>
+                <textarea
+                  placeholder={`Observação do Ponto ${proximaOrdem}`}
+                  value={observacao}
+                  onChange={(event) => setObservacao(event.target.value)}
+                  style={{
+                    boxSizing: "border-box",
+                    width: "100%",
+                    minHeight: 84,
+                    marginTop: 12,
+                    borderRadius: 14,
+                    border: "1px solid #cbd5e1",
+                    padding: 12,
+                    resize: "vertical",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void salvarPonto()}
+                  disabled={carregando}
+                  style={{
+                    marginTop: 10,
+                    width: "100%",
+                    height: 50,
+                    borderRadius: 14,
+                    border: "none",
+                    background: "#16a34a",
+                    color: "white",
+                    fontWeight: 800,
+                    cursor: carregando ? "wait" : "pointer",
+                    opacity: carregando ? 0.7 : 1,
+                  }}
+                >
+                  {carregando ? "Salvando..." : `Salvar Ponto ${proximaOrdem}`}
+                </button>
+              </>
+            )}
+
+            {fotos.length > 0 && (
+              <div style={{ marginTop: 10, color: "#475569", fontSize: 13 }}>
+                {fotos.length} foto(s) coletada(s)
+              </div>
+            )}
+
+            {mensagem && (
+              <div
+                style={{
+                  marginTop: 12,
+                  borderRadius: 14,
+                  padding: 12,
+                  background: "#e0f2fe",
+                  color: "#075985",
+                  fontSize: 13,
+                  lineHeight: 1.4,
+                }}
+              >
+                {mensagem}
+              </div>
+            )}
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

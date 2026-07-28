@@ -72,16 +72,95 @@ export type Demanda = {
   status: "Andamento" | "Concluida" | "Devolvida" | "Finalizada";
 };
 
-export default function App() {
-  const [tela, setTela] = useState<Tela>("splash");
-  const [usuario, setUsuario] = useState<UsuarioLogado | null>(null);
-  const [demandas, setDemandas] = useState<Demanda[]>([]);
-  const [demandaSelecionada, setDemandaSelecionada] =
-    useState<Demanda | null>(null);
-  const [equipeSelecionada, setEquipeSelecionada] =
-    useState<Equipe | null>(null);
+const PREVIEWS_DISPONIVEIS: Record<string, Tela> = {
+  splash: "splash",
+  equipes: "selecionarEquipe",
+  login: "login",
+  inicio: "inicio",
+  demandas: "demandas",
+  mapa: "mapa",
+  atendimento: "atendimento",
+  fotos: "fotos",
+  sincronizacao: "sincronizacao",
+};
 
-  const [rotaSelecionada, setRotaSelecionada] = useState<Demanda[]>([]);
+const PREVIEW_SOLICITADO = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get("preview") || ""
+  : "";
+const TELA_PREVIEW = PREVIEWS_DISPONIVEIS[PREVIEW_SOLICITADO];
+const MODO_PREVIEW = Boolean(TELA_PREVIEW);
+
+const DEMANDA_PREVIEW: Demanda = {
+  id: -1,
+  solicitacao: "Levantamento de demonstração",
+  nome: "Cliente local",
+  regional: "Regional de teste",
+  municipio: "São Paulo",
+  prazo: new Date().toISOString(),
+  id_equipe: -1,
+  detalhes: "Tela local para testar a coleta e a aproximação do mapa.",
+  telefone: "-",
+  latitude: "-23.550520",
+  longitude: "-46.633308",
+  prioridade: "Normal",
+  data_servico: new Date().toISOString(),
+  status: "Andamento",
+};
+
+const DEMANDAS_PREVIEW: Demanda[] = [
+  DEMANDA_PREVIEW,
+  {
+    ...DEMANDA_PREVIEW,
+    id: -2,
+    solicitacao: "Inspeção emergencial de demonstração",
+    nome: "Segundo cliente local",
+    latitude: "-23.550700",
+    longitude: "-46.633500",
+    prioridade: "Emergencial",
+  },
+];
+
+const EQUIPE_PREVIEW: Equipe = {
+  id_equipe: -1,
+  numero_equipe: "DEMO-01",
+  veiculo: "Veículo de demonstração",
+  placa: "LOCAL",
+  status: "Ativo",
+};
+
+const USUARIO_PREVIEW: UsuarioLogado = {
+  id: -1,
+  nome_completo: "Usuário de demonstração",
+  user: "demo",
+  perfil: "Campo",
+  id_equipe: EQUIPE_PREVIEW.id_equipe,
+  numero_equipe: EQUIPE_PREVIEW.numero_equipe,
+  veiculo: EQUIPE_PREVIEW.veiculo,
+  placa: EQUIPE_PREVIEW.placa,
+  status: EQUIPE_PREVIEW.status,
+  token: "",
+};
+
+export default function App() {
+  const [tela, setTela] = useState<Tela>(
+    TELA_PREVIEW || "splash"
+  );
+  const [usuario, setUsuario] = useState<UsuarioLogado | null>(
+    MODO_PREVIEW ? USUARIO_PREVIEW : null
+  );
+  const [demandas, setDemandas] = useState<Demanda[]>(
+    MODO_PREVIEW ? DEMANDAS_PREVIEW : []
+  );
+  const [demandaSelecionada, setDemandaSelecionada] =
+    useState<Demanda | null>(
+      MODO_PREVIEW ? DEMANDA_PREVIEW : null
+    );
+  const [equipeSelecionada, setEquipeSelecionada] =
+    useState<Equipe | null>(MODO_PREVIEW ? EQUIPE_PREVIEW : null);
+
+  const [rotaSelecionada, setRotaSelecionada] = useState<Demanda[]>(
+    MODO_PREVIEW ? DEMANDAS_PREVIEW : []
+  );
   const [posicaoAtual, setPosicaoAtual] = useState<[number, number] | null>(
     carregarPosicaoAtual()
   );
@@ -89,7 +168,7 @@ export default function App() {
   const ultimoPontoRotaEmRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!usuario?.id_equipe) {
+    if (MODO_PREVIEW || !usuario?.id_equipe) {
       return;
     }
 
@@ -145,6 +224,10 @@ export default function App() {
   }
 
   async function enviarPontoRota(ponto: OfflineRoutePoint) {
+    if (MODO_PREVIEW) {
+      return;
+    }
+
     const resposta = await authFetch(`${API_BASE_URL}/rota`, {
       method: "POST",
       headers: {
@@ -235,7 +318,7 @@ export default function App() {
   useEffect(() => {
     const idEquipe = usuario?.id_equipe;
 
-    if (!idEquipe) {
+    if (MODO_PREVIEW || !idEquipe) {
       return;
     }
 
@@ -272,6 +355,10 @@ export default function App() {
   }, [usuario?.id_equipe]);
 
   useEffect(() => {
+    if (MODO_PREVIEW) {
+      return;
+    }
+
     if (!usuario?.id_equipe) {
       setRotaSelecionada([]);
       return;
@@ -317,6 +404,7 @@ export default function App() {
 
       {tela === "selecionarEquipe" && (
         <SelecionarEquipe
+          equipesDemonstracao={MODO_PREVIEW ? [EQUIPE_PREVIEW] : undefined}
           selecionar={(equipe) => {
             setEquipeSelecionada(equipe);
             setTela("login");
@@ -328,6 +416,7 @@ export default function App() {
       {tela === "login" && (
         <Login
           equipe={equipeSelecionada}
+          usuarioDemonstracao={MODO_PREVIEW ? USUARIO_PREVIEW : undefined}
           voltar={() => setTela("selecionarEquipe")}
           onLogin={(usuarioLogado) => {
             setUsuario(usuarioLogado);
@@ -344,10 +433,7 @@ export default function App() {
           setRotaSelecionada={setRotaSelecionada}
           posicaoAtual={posicaoAtual}
           deslocamentoAtivo={watchId !== null}
-          iniciarDeslocamento={iniciarDeslocamento}
-          pararDeslocamento={pararDeslocamento}
           abrirDemanda={abrirDemanda}
-          irParaDemandas={() => setTela("demandas")}
           setTela={setTela}
         />
       )}
@@ -374,6 +460,7 @@ export default function App() {
           pararDeslocamento={pararDeslocamento}
           atualizarDemanda={atualizarDemanda}
           abrirDemanda={abrirDemanda}
+          modoDemonstracao={MODO_PREVIEW}
           setTela={setTela}
         />
       )}
@@ -381,6 +468,7 @@ export default function App() {
       {tela === "atendimento" && demandaSelecionada && (
         <Atendimento
           demanda={demandaSelecionada}
+          modoDemonstracao={MODO_PREVIEW}
           voltar={() => setTela("demandas")}
           abrirGaleria={() => setTela("fotos")}
         />
@@ -389,12 +477,17 @@ export default function App() {
       {tela === "fotos" && demandaSelecionada && (
       <Fotos
         demanda={demandaSelecionada}
+        modoDemonstracao={MODO_PREVIEW}
         voltar={() => setTela("atendimento")}
       />
       )}
 
       {tela === "sincronizacao" && (
-        <Sincronizacao usuario={usuario} setTela={setTela} />
+        <Sincronizacao
+          usuario={usuario}
+          modoDemonstracao={MODO_PREVIEW}
+          setTela={setTela}
+        />
       )}
     </>
   );
