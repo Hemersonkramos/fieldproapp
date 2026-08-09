@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Smartphone } from "lucide-react";
+import { ChevronLeft, Smartphone } from "lucide-react";
 import type { Equipe } from "../App";
 import { API_BASE_URL } from "../lib/api";
 
@@ -90,21 +90,25 @@ export default function SelecionarEquipe({
           <button
             type="button"
             onClick={voltar}
+            aria-label="Voltar"
             style={{
-              width: 40,
-              height: 40,
-              borderRadius: 999,
-              border: "none",
-              background: "rgba(255,255,255,0.12)",
+              width: 44,
+              height: 44,
+              borderRadius: 14,
+              border: "1px solid rgba(255,255,255,0.22)",
+              background: "rgba(255,255,255,0.09)",
               color: "white",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
+              boxShadow: "0 8px 20px rgba(2, 27, 51, 0.2)",
+              backdropFilter: "blur(8px)",
+              WebkitTapHighlightColor: "transparent",
             }}
           >
-              <span style={{ fontSize: 22 }}>←</span>
-            </button>
+            <ChevronLeft size={24} strokeWidth={2.25} />
+          </button>
 
           <div
             style={{

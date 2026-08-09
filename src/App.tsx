@@ -429,11 +429,7 @@ export default function App() {
         <Inicio
           usuario={usuario}
           demandas={demandas}
-          rotaSelecionada={rotaSelecionada}
-          setRotaSelecionada={setRotaSelecionada}
           posicaoAtual={posicaoAtual}
-          deslocamentoAtivo={watchId !== null}
-          abrirDemanda={abrirDemanda}
           setTela={setTela}
         />
       )}

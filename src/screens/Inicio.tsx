@@ -8,10 +8,14 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import "leaflet-routing-machine";
 import type { Demanda, UsuarioLogado } from "../App";
 import BottomNav from "../components/BottomNav";
-import { carregarPosicaoAtual, salvarPosicaoAtual } from "../lib/offlineStorage";
+import {
+  carregarLevantamentosPendentes,
+  carregarPontosRotaPendentes,
+  carregarPosicaoAtual,
+  salvarPosicaoAtual,
+} from "../lib/offlineStorage";
 
 type LeafletDefaultIconPrototype = typeof L.Icon.Default.prototype & {
   _getIconUrl?: string;
@@ -20,28 +24,8 @@ type LeafletDefaultIconPrototype = typeof L.Icon.Default.prototype & {
 type Props = {
   usuario: UsuarioLogado;
   demandas: Demanda[];
-  rotaSelecionada: Demanda[];
-  setRotaSelecionada: React.Dispatch<React.SetStateAction<Demanda[]>>;
   posicaoAtual: [number, number] | null;
-  deslocamentoAtivo: boolean;
-  abrirDemanda: (demanda: Demanda) => void;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
-};
-
-type RoutingProps = {
-  origem: [number, number] | null;
-  rotaSelecionada: Demanda[];
-};
-
-type RoutingControlOptionsWithExtras = L.Routing.RoutingControlOptions & {
-  draggableWaypoints: boolean;
-  createMarker: () => null;
-};
-
-type LeafletRoutingNamespace = typeof L & {
-  Routing: {
-    control: (options: RoutingControlOptionsWithExtras) => L.Routing.Control;
-  };
 };
 
 delete (L.Icon.Default.prototype as LeafletDefaultIconPrototype)._getIconUrl;
@@ -54,18 +38,6 @@ L.Icon.Default.mergeOptions({
   shadowUrl:
     "https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png",
 });
-
-const routeLineOptions: L.Routing.LineOptions = {
-  extendToWaypoints: true,
-  missingRouteTolerance: 0,
-  styles: [
-    {
-      color: "#0A3A63",
-      weight: 5,
-      opacity: 0.9,
-    },
-  ],
-};
 
 const iconeUsuario = L.divIcon({
   className: "custom-user-marker",
@@ -185,37 +157,36 @@ function corDoAlfinete(demanda: Demanda) {
   return "#eab308";
 }
 
-function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
+function AjustarMapaDemandas({
+  posicao,
+  demandas,
+}: {
+  posicao: [number, number];
+  demandas: Demanda[];
+}) {
   const map = useMap();
 
   useEffect(() => {
-    if (!origem || rotaSelecionada.length === 0) {
-      return;
-    }
-
-    const waypoints = [
-      L.latLng(origem[0], origem[1]),
-      ...rotaSelecionada.map((d) =>
-        L.latLng(Number(d.latitude), Number(d.longitude))
+    const coordenadas: [number, number][] = [
+      posicao,
+      ...demandas.map(
+        (demanda) =>
+          [Number(demanda.latitude), Number(demanda.longitude)] as [
+            number,
+            number,
+          ]
       ),
-    ];
+    ].filter(
+      ([latitude, longitude]) =>
+        Number.isFinite(latitude) && Number.isFinite(longitude)
+    );
 
-    const routing = L as LeafletRoutingNamespace;
-    const routingControl = routing.Routing.control({
-      waypoints,
-      routeWhileDragging: false,
-      addWaypoints: false,
-      draggableWaypoints: false,
-      fitSelectedRoutes: true,
-      show: false,
-      createMarker: () => null,
-      lineOptions: routeLineOptions,
-    }).addTo(map);
-
-    return () => {
-      map.removeControl(routingControl);
-    };
-  }, [map, origem, rotaSelecionada]);
+    if (coordenadas.length > 1) {
+      map.fitBounds(coordenadas, { padding: [36, 36], maxZoom: 14 });
+    } else {
+      map.setView(posicao, 14);
+    }
+  }, [demandas, map, posicao]);
 
   return null;
 }
@@ -223,18 +194,18 @@ function RotaPorRuas({ origem, rotaSelecionada }: RoutingProps) {
 export default function Inicio({
   usuario,
   demandas,
-  rotaSelecionada,
   posicaoAtual,
-  deslocamentoAtivo,
   setTela,
 }: Props) {
   const [posicao, setPosicao] = useState<[number, number] | null>(
-    carregarPosicaoAtual()
+    posicaoAtual ?? carregarPosicaoAtual()
   );
-  const [online, setOnline] = useState(navigator.onLine);
   const [isCompact, setIsCompact] = useState(() => window.innerWidth <= 520);
-
-  const total = demandas.length;
+  const [pendenciasSincronizacao, setPendenciasSincronizacao] = useState(
+    () =>
+      carregarPontosRotaPendentes(usuario.id_equipe).length +
+      carregarLevantamentosPendentes().length
+  );
 
   const andamento = demandas.filter((d) =>
     ["Andamento", "Devolvida"].includes(d.status)
@@ -257,10 +228,23 @@ export default function Inicio({
   }).length;
 
   useEffect(() => {
-    if (posicaoAtual) {
-      setPosicao(posicaoAtual);
+    function atualizarPendencias() {
+      setPendenciasSincronizacao(
+        carregarPontosRotaPendentes(usuario.id_equipe).length +
+          carregarLevantamentosPendentes().length
+      );
     }
-  }, [posicaoAtual]);
+
+    window.addEventListener("focus", atualizarPendencias);
+    window.addEventListener("storage", atualizarPendencias);
+    document.addEventListener("visibilitychange", atualizarPendencias);
+
+    return () => {
+      window.removeEventListener("focus", atualizarPendencias);
+      window.removeEventListener("storage", atualizarPendencias);
+      document.removeEventListener("visibilitychange", atualizarPendencias);
+    };
+  }, [usuario.id_equipe]);
 
   useEffect(() => {
     navigator.geolocation.getCurrentPosition(
@@ -287,20 +271,6 @@ export default function Inicio({
 
     return () => {
       window.removeEventListener("resize", atualizarViewport);
-    };
-  }, []);
-
-  useEffect(() => {
-    function atualizarStatus() {
-      setOnline(navigator.onLine);
-    }
-
-    window.addEventListener("online", atualizarStatus);
-    window.addEventListener("offline", atualizarStatus);
-
-    return () => {
-      window.removeEventListener("online", atualizarStatus);
-      window.removeEventListener("offline", atualizarStatus);
     };
   }, []);
 
@@ -363,7 +333,6 @@ export default function Inicio({
     );
   }
 
-  const rotaVisivel = rotaSelecionada.filter((d) => d.status !== "Finalizada");
   const demandasVisiveis = demandas.filter((d) => d.status !== "Finalizada");
 
   return (
@@ -375,11 +344,17 @@ export default function Inicio({
           padding: "20px 20px 24px",
         }}
       >
-        <h2 style={{ margin: 0 }}>Olá, equipe {usuario.numero_equipe}</h2>
+        <h2 style={{ margin: 0 }}>Visão geral operacional</h2>
 
-        <p style={{ marginTop: 6, marginBottom: 0 }}>
-          {total} demandas • {emergenciais} urgentes • {foraPrazo} atrasadas •{" "}
-          {deslocamentoAtivo ? "GPS ativo" : "pronto para iniciar"}
+        <p
+          style={{
+            marginTop: 6,
+            marginBottom: 0,
+            color: "rgba(255,255,255,0.82)",
+            fontSize: 14,
+          }}
+        >
+          Equipe {usuario.numero_equipe} · Acompanhamento de demandas e indicadores
         </p>
       </div>
 
@@ -418,10 +393,17 @@ export default function Inicio({
 
           {cardDashboard(
             "Sincronização",
-            "Em dia",
-            "#dcfce7",
-            "#16a34a",
-            <RefreshCw size={22} color="#16a34a" />
+            pendenciasSincronizacao === 0
+              ? "Em dia"
+              : `${pendenciasSincronizacao} pendente${
+                  pendenciasSincronizacao === 1 ? "" : "s"
+                }`,
+            pendenciasSincronizacao === 0 ? "#dcfce7" : "#ffedd5",
+            pendenciasSincronizacao === 0 ? "#16a34a" : "#c2410c",
+            <RefreshCw
+              size={22}
+              color={pendenciasSincronizacao === 0 ? "#16a34a" : "#ea580c"}
+            />
           )}
         </div>
 
@@ -484,15 +466,16 @@ export default function Inicio({
               >
                 <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
                 <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
+                <AjustarMapaDemandas
+                  posicao={posicao}
+                  demandas={demandasVisiveis}
+                />
 
                 <Marker position={posicao} icon={iconeUsuario}>
                   <Popup>Você está aqui</Popup>
                 </Marker>
 
                 {demandasVisiveis.map((d) => {
-                  const ordem =
-                    rotaVisivel.findIndex((item) => item.id === d.id) + 1;
-
                   return (
                     <Marker
                       key={d.id}
@@ -507,20 +490,11 @@ export default function Inicio({
                         {d.municipio}
                         <br />
                         Prioridade: {d.prioridade}
-                        {ordem > 0 ? (
-                          <>
-                            <br />
-                            Ordem na rota: {ordem}
-                          </>
-                        ) : null}
                       </Popup>
                     </Marker>
                   );
                 })}
 
-                {online && (
-                  <RotaPorRuas origem={posicao} rotaSelecionada={rotaVisivel} />
-                )}
               </MapContainer>
             ) : (
               <div

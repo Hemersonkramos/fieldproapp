@@ -1,4 +1,4 @@
-const CACHE_NAME = "fieldpro-app-v1";
+const CACHE_NAME = "fieldpro-app-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/icons.svg"];
 
 self.addEventListener("install", (event) => {
@@ -22,6 +22,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
+
+  if (["localhost", "127.0.0.1"].includes(url.hostname)) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   if (request.method !== "GET" || url.pathname.startsWith("/api/")) {
     return;

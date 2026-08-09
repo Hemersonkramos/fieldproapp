@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import BottomNav from "../components/BottomNav";
 import {
   carregarLevantamentosPendentes,
@@ -451,8 +452,33 @@ export default function Sincronizacao({
               lineHeight: 1.5,
             }}
           >
-            Em locais sem internet, o app salva rota, demandas e levantamentos no
-            aparelho e envia depois pela sincronizacao.
+            Na ausência de conexão, os dados permanecem armazenados com segurança
+            neste dispositivo e serão enviados na próxima sincronização.
+
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                marginTop: 14,
+                borderRadius: 14,
+                padding: 12,
+                background: "#fff7ed",
+                color: "#9a3412",
+                fontWeight: 700,
+              }}
+            >
+              <AlertTriangle
+                size={20}
+                style={{ flexShrink: 0, marginTop: 1 }}
+              />
+              <span>
+                Não limpe o cache ou os dados do aplicativo e não o desinstale
+                enquanto houver pendências. Essas ações podem excluir
+                definitivamente informações ainda não sincronizadas.
+              </span>
+            </div>
           </div>
         </div>
       </div>
