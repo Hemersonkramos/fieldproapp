@@ -20,7 +20,7 @@ import {
 } from "./lib/offlineStorage";
 import { API_BASE_URL, authFetch, obterToken } from "./lib/api";
 
-const INTERVALO_PONTO_ROTA_MS = 10 * 60 * 1000;
+const INTERVALO_PONTO_ROTA_MS = 3 * 60 * 1000;
 
 export type Tela =
   | "splash"
