@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { contarPendenciasEnvio } from "../lib/offlineStorage";
+import { contarPendenciasEnvio, EVENTO_PENDENCIAS } from "../lib/offlineStorage";
 
 type Tela = "inicio" | "demandas" | "mapa" | "sincronizacao";
 
@@ -31,10 +31,12 @@ export default function BottomNav({ telaAtual, setTela }: Props) {
     const atualizar = () => setPendentes(contarPendentes());
     window.addEventListener("focus", atualizar);
     window.addEventListener("storage", atualizar);
+    window.addEventListener(EVENTO_PENDENCIAS, atualizar);
     const intervalo = window.setInterval(atualizar, 15000);
     return () => {
       window.removeEventListener("focus", atualizar);
       window.removeEventListener("storage", atualizar);
+      window.removeEventListener(EVENTO_PENDENCIAS, atualizar);
       window.clearInterval(intervalo);
     };
   }, []);

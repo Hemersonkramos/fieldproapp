@@ -37,6 +37,11 @@ export type PendingSurvey = {
   observacao: string;
   data_coleta: string;
   fotos: FotoPendente[];
+  /**
+   * Motivo da ultima falha de envio que nao se resolve tentando de novo
+   * (ex.: a solicitacao foi excluida no escritorio). Mostrado na aba Sync.
+   */
+  erro_envio?: string;
 };
 
 /**
@@ -228,6 +233,13 @@ export function salvarLevantamentosPendentes(pendentes: PendingSurvey[]) {
       "Armazenamento do aparelho cheio. Sincronize os levantamentos pendentes antes de coletar mais fotos."
     );
   }  gravarTexto(CHAVE_TOTAL_PENDENTES, String(pendentes.length));
+  avisarPendenciasMudaram();
+}
+
+/** Avisa a tela (selo da aba Sync) que a fila de envio mudou. */
+export const EVENTO_PENDENCIAS = "fieldpro:pendencias";
+function avisarPendenciasMudaram() {
+  window.dispatchEvent(new Event(EVENTO_PENDENCIAS));
 }
 
 const CHAVE_TOTAL_PENDENTES = "fieldpro_levantamentos_pendentes_total";
@@ -449,6 +461,7 @@ export function adicionarConclusaoPendente(conclusao: ConclusaoPendente) {
   if (!salvarJson(CHAVE_CONCLUSOES, [...atuais, conclusao])) {
     throw new Error("Armazenamento do aparelho cheio. Não foi possível guardar a conclusão.");
   }
+  avisarPendenciasMudaram();
 }
 
 export function removerConclusaoPendente(idSolicitacao: number) {
@@ -456,6 +469,7 @@ export function removerConclusaoPendente(idSolicitacao: number) {
     CHAVE_CONCLUSOES,
     carregarConclusoesPendentes().filter((item) => item.id_solicitacao !== idSolicitacao)
   );
+  avisarPendenciasMudaram();
 }
 
 export function conclusaoEstaPendente(idSolicitacao: number) {
@@ -465,4 +479,13 @@ export function conclusaoEstaPendente(idSolicitacao: number) {
 /** Tudo que ainda precisa subir: pontos coletados + conclusoes. */
 export function contarPendenciasEnvio() {
   return contarLevantamentosPendentes() + carregarConclusoesPendentes().length;
+}
+
+/** Marca (ou limpa) o motivo de um levantamento pendente nao conseguir subir. */
+export function marcarErroLevantamento(localId: number, erro: string | undefined) {
+  salvarLevantamentosPendentes(
+    carregarLevantamentosPendentes().map((pendente) =>
+      pendente.local_id === localId ? { ...pendente, erro_envio: erro } : pendente
+    )
+  );
 }

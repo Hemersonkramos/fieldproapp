@@ -3,16 +3,21 @@ import { AlertTriangle } from "lucide-react";
 import BottomNav from "../components/BottomNav";
 import {
   carregarConclusoesPendentes,
+  carregarDemandasCache,
   carregarLevantamentosPendentes,
   carregarPontosRotaPendentes,
   contarFotosPendentes,
+  marcarErroLevantamento,
   removerConclusaoPendente,
   removerLevantamentoPendente,
   salvarPontosRotaPendentes,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch } from "../lib/api";
 import { lerFotoOffline } from "../lib/fotosOffline";
-import { mensagemDeErro, notificar } from "../lib/feedback";
+
+/** Falha que nao se resolve tentando de novo (ex.: solicitacao excluida no escritorio). */
+class ErroPermanente extends Error {}
+import { confirmar, mensagemDeErro, notificar } from "../lib/feedback";
 import type { UsuarioLogado } from "../App";
 
 type Props = {
@@ -117,6 +122,10 @@ export default function Sincronizacao({
   );
   const [fotosPendentes, setFotosPendentes] = useState(contarFotosPendentes);
   const [conclusoesPendentes, setConclusoesPendentes] = useState(carregarConclusoesPendentes);
+  // Pontos que nao conseguem subir (ex.: solicitacao excluida): a equipe decide o que fazer.
+  const [itensComProblema, setItensComProblema] = useState(() =>
+    carregarLevantamentosPendentes().filter((pendente) => pendente.erro_envio)
+  );
   const [mensagem, setMensagem] = useState("");
   const [sincronizando, setSincronizando] = useState(false);
   const [progresso, setProgresso] = useState(0);
@@ -129,6 +138,25 @@ export default function Sincronizacao({
     setLevantamentosPendentes(carregarLevantamentosPendentes().length);
     setFotosPendentes(contarFotosPendentes());
     setConclusoesPendentes(carregarConclusoesPendentes());
+    setItensComProblema(carregarLevantamentosPendentes().filter((pendente) => pendente.erro_envio));
+  }
+
+  async function descartarItem(localId: number) {
+    const item = itensComProblema.find((pendente) => pendente.local_id === localId);
+    if (!item) return;
+
+    const confirmado = await confirmar({
+      titulo: `Descartar o ponto ${item.ordem_ponto}?`,
+      mensagem: `${item.erro_envio ?? ""} O ponto e ${item.fotos.length} foto(s) serão apagados do aparelho. Essa ação não pode ser desfeita.`,
+      confirmarTexto: "Descartar",
+      perigo: true,
+    });
+    if (!confirmado) return;
+
+    removerLevantamentoPendente(localId);
+    // Se nao sobrou nenhum ponto desta demanda, a conclusao dela pode seguir.
+    carregarPendencias();
+    notificar("Ponto descartado do aparelho.", "sucesso");
   }
 
   async function sincronizarAgora() {
@@ -210,102 +238,140 @@ export default function Sincronizacao({
 
       salvarPontosRotaPendentes(idEquipe, pontosRotaFalhados);
 
-      if (pontosRotaFalhados.length > 0) {
-        throw new Error(
-          `${pontosRotaFalhados.length} ponto(s) de rota nao foram sincronizados. Tente novamente.`
-        );
-      }
+      // Cada levantamento e enviado separadamente: um item com erro NAO trava os
+      // outros (antes a sincronizacao parava no primeiro erro e nada mais subia).
+      let enviados = 0;
+      let comProblema = 0;
+      let falhasTemporarias = 0;
+      const solicitacoesComPontosRetidos = new Set<number>();
+      const nomes = new Map(
+        carregarDemandasCache(idEquipe).map((demanda) => [demanda.id, demanda.solicitacao])
+      );
 
-      for (const levantamento of levantamentosAtuais) {
-        setMensagem(
-          `Enviando levantamento ${etapasConcluidas - pontosRotaAtuais.length + 1} de ${levantamentosAtuais.length}...`
-        );
-        const fotosPayload = [];
+      for (const [indice, levantamento] of levantamentosAtuais.entries()) {
+        const nome = nomes.get(levantamento.id_solicitacao) ?? `#${levantamento.id_solicitacao}`;
+        setMensagem(`Enviando ponto ${levantamento.ordem_ponto} de ${nome} (${indice + 1} de ${levantamentosAtuais.length})...`);
 
-        for (let index = 0; index < levantamento.fotos.length; index += 1) {
-          const foto = levantamento.fotos[index];
-          setMensagem(
-            `Preparando foto ${index + 1} de ${levantamento.fotos.length} do levantamento...`
-          );
-          // Fotos novas estao no IndexedDB (chaveFoto); as antigas, em base64 na propria fila.
-          const conteudo =
-            foto.conteudoBase64 ?? (foto.chaveFoto ? await lerFotoOffline(foto.chaveFoto) : undefined);
+        try {
+          const fotosPayload = [];
 
-          if (!conteudo) {
-            console.warn("Foto pendente não encontrada no aparelho:", foto.chaveFoto);
-            continue;
+          for (let index = 0; index < levantamento.fotos.length; index += 1) {
+            const foto = levantamento.fotos[index];
+            // Fotos novas estao no IndexedDB (chaveFoto); as antigas, em base64 na propria fila.
+            const conteudo =
+              foto.conteudoBase64 ?? (foto.chaveFoto ? await lerFotoOffline(foto.chaveFoto) : undefined);
+
+            if (!conteudo) {
+              console.warn("Foto pendente não encontrada no aparelho:", foto.chaveFoto);
+              continue;
+            }
+
+            fotosPayload.push({
+              nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
+              tipo: "image/jpeg",
+              conteudoBase64: await recomprimirBase64Imagem(conteudo),
+            });
           }
 
-          fotosPayload.push({
-            nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
-            tipo: "image/jpeg",
-            conteudoBase64: await recomprimirBase64Imagem(conteudo),
-          });
+          if (fotosPayload.length === 0) {
+            throw new ErroPermanente("As fotos deste ponto não foram encontradas no aparelho.");
+          }
+
+          const resposta = await authFetchComTimeout(`${API_BASE_URL}/pontos-coletados`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              id_solicitacao: levantamento.id_solicitacao,
+              ordem_ponto: levantamento.ordem_ponto,
+              latitude: levantamento.latitude,
+              longitude: levantamento.longitude,
+              observacao: levantamento.observacao,
+              // Horario em que o ponto foi coletado (sem internet), nao o da sincronizacao.
+              data_coleta: levantamento.data_coleta,
+              fotos: fotosPayload,
+            }),
+          }, TIMEOUT_LEVANTAMENTO_MS);
+
+          const dados = await resposta.json().catch(() => ({}));
+
+          if (resposta.status === 404) {
+            throw new ErroPermanente(
+              `A solicitação ${nome} não existe mais no escritório (pode ter sido excluída).`
+            );
+          }
+          if (resposta.status === 400 || resposta.status === 413) {
+            throw new ErroPermanente(dados.erro || "O servidor recusou este ponto.");
+          }
+          if (!resposta.ok) {
+            throw new Error(dados.erro || "Erro ao sincronizar levantamento.");
+          }
+
+          removerLevantamentoPendente(levantamento.local_id);
+          enviados += 1;
+        } catch (error) {
+          console.error("Levantamento não enviado:", error);
+          solicitacoesComPontosRetidos.add(levantamento.id_solicitacao);
+
+          if (error instanceof ErroPermanente) {
+            // Nao adianta tentar de novo: fica marcado para a equipe decidir (descartar).
+            marcarErroLevantamento(levantamento.local_id, error.message);
+            comProblema += 1;
+          } else {
+            // Rede/servidor: tenta de novo na proxima sincronizacao.
+            marcarErroLevantamento(levantamento.local_id, undefined);
+            falhasTemporarias += 1;
+          }
         }
 
-        if (fotosPayload.length === 0) {
-          throw new Error(
-            `As fotos do ponto ${levantamento.ordem_ponto} não foram encontradas no aparelho.`
-          );
-        }
-
-        setMensagem(
-          `Enviando levantamento ${etapasConcluidas - pontosRotaAtuais.length + 1} de ${levantamentosAtuais.length}...`
-        );
-
-        const resposta = await authFetchComTimeout(`${API_BASE_URL}/pontos-coletados`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            id_solicitacao: levantamento.id_solicitacao,
-            ordem_ponto: levantamento.ordem_ponto,
-            latitude: levantamento.latitude,
-            longitude: levantamento.longitude,
-            observacao: levantamento.observacao,
-            // Horario em que o ponto foi coletado (sem internet), nao o da sincronizacao.
-            data_coleta: levantamento.data_coleta,
-            fotos: fotosPayload,
-          }),
-        }, TIMEOUT_LEVANTAMENTO_MS);
-
-        const dados = await resposta.json().catch(() => ({}));
-
-        if (!resposta.ok) {
-          throw new Error(dados.erro || "Erro ao sincronizar levantamento.");
-        }
-
-        removerLevantamentoPendente(levantamento.local_id);
         atualizarProgresso();
       }
 
-      // Conclusoes feitas sem internet: so depois que todos os pontos subiram
-      // (se algum ponto falhar, o loop acima interrompe e nada e concluido).
+      // Conclusoes feitas sem internet: so quando todos os pontos daquela demanda
+      // ja subiram (o escritorio nunca recebe a demanda concluida sem os pontos).
+      let conclusoesEnviadas = 0;
+      let conclusoesDescartadas = 0;
+      let conclusoesAguardando = 0;
+
       for (const conclusao of conclusoesAtuais) {
+        if (solicitacoesComPontosRetidos.has(conclusao.id_solicitacao)) {
+          conclusoesAguardando += 1;
+          atualizarProgresso();
+          continue;
+        }
+
         setMensagem(`Concluindo a solicitação ${conclusao.solicitacao}...`);
 
-        const resposta = await authFetchComTimeout(
-          `${API_BASE_URL}/solicitacoes/${conclusao.id_solicitacao}/concluir`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ data_conclusao: conclusao.data_conclusao }),
-          },
-          TIMEOUT_LEVANTAMENTO_MS
-        );
-        const dados = await resposta.json().catch(() => ({}));
+        try {
+          const resposta = await authFetchComTimeout(
+            `${API_BASE_URL}/solicitacoes/${conclusao.id_solicitacao}/concluir`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ data_conclusao: conclusao.data_conclusao }),
+            },
+            TIMEOUT_LEVANTAMENTO_MS
+          );
+          const dados = await resposta.json().catch(() => ({}));
 
-        // 400: ja estava concluida/finalizada no servidor; 404: solicitacao removida.
-        // Nos dois casos nao ha o que reenviar.
-        if (!resposta.ok && resposta.status !== 400 && resposta.status !== 404) {
-          throw new Error(dados.erro || `Erro ao concluir a solicitação ${conclusao.solicitacao}.`);
-        }
-        if (resposta.status === 404) {
-          notificar(`A solicitação ${conclusao.solicitacao} não existe mais no escritório.`, "aviso");
+          // 400: ja estava concluida/finalizada no servidor; 404: solicitacao removida.
+          // Nos dois casos nao ha o que reenviar.
+          if (!resposta.ok && resposta.status !== 400 && resposta.status !== 404) {
+            throw new Error(dados.erro || `Erro ao concluir a solicitação ${conclusao.solicitacao}.`);
+          }
+          removerConclusaoPendente(conclusao.id_solicitacao);
+          if (resposta.status === 404) {
+            notificar(`A solicitação ${conclusao.solicitacao} não existe mais no escritório; a conclusão foi descartada.`, "aviso");
+            conclusoesDescartadas += 1;
+          } else {
+            conclusoesEnviadas += 1;
+          }
+        } catch (error) {
+          console.error("Conclusão não enviada:", error);
+          falhasTemporarias += 1;
         }
 
-        removerConclusaoPendente(conclusao.id_solicitacao);
         atualizarProgresso();
       }
 
@@ -321,8 +387,24 @@ export default function Sincronizacao({
       setUltimaSync(agora);
       setProgresso(100);
       carregarPendencias();
-      setMensagem("Sincronização concluída com sucesso.");
-      notificar("Tudo sincronizado com o escritório.", "sucesso");
+
+      const partes = [
+        enviados > 0 ? `${enviados} ponto(s) enviado(s)` : "",
+        conclusoesEnviadas > 0 ? `${conclusoesEnviadas} conclusão(ões) enviada(s)` : "",
+        conclusoesDescartadas > 0 ? `${conclusoesDescartadas} conclusão(ões) descartada(s) (solicitação excluída)` : "",
+        comProblema > 0 ? `${comProblema} ponto(s) com problema (veja abaixo)` : "",
+        falhasTemporarias > 0 ? `${falhasTemporarias} item(ns) não enviado(s) por falha de conexão — tente de novo` : "",
+        conclusoesAguardando > 0 ? `${conclusoesAguardando} conclusão(ões) aguardando os pontos da demanda` : "",
+        pontosRotaFalhados.length > 0 ? `${pontosRotaFalhados.length} ponto(s) de rota não enviados` : "",
+      ].filter(Boolean);
+
+      const tudoCerto = comProblema === 0 && falhasTemporarias === 0 && conclusoesAguardando === 0 && pontosRotaFalhados.length === 0;
+      const resumo = partes.length > 0 ? `${partes.join(" · ")}.` : "Nada a enviar.";
+      setMensagem(tudoCerto ? `Sincronização concluída: ${resumo}` : `Sincronização parcial: ${resumo}`);
+      notificar(
+        tudoCerto ? "Tudo sincronizado com o escritório." : `Sincronização parcial: ${resumo}`,
+        tudoCerto ? "sucesso" : comProblema > 0 ? "aviso" : "erro"
+      );
     } catch (error) {
       console.error(error);
       carregarPendencias();
@@ -481,6 +563,63 @@ export default function Sincronizacao({
               )}
             </div>
           </div>
+
+          {itensComProblema.length > 0 && (
+            <div
+              role="alert"
+              style={{
+                marginBottom: 14,
+                padding: 14,
+                borderRadius: 18,
+                background: "#fff7ed",
+                border: "1px solid #fed7aa",
+                textAlign: "left",
+              }}
+            >
+              <strong style={{ display: "block", color: "#9a3412", marginBottom: 6 }}>
+                {itensComProblema.length} ponto(s) não podem ser enviados
+              </strong>
+              <p style={{ margin: "0 0 10px", fontSize: 13, color: "#9a3412" }}>
+                Eles não travam mais a sincronização dos outros itens. Confira o motivo e
+                descarte se a solicitação não existir mais.
+              </p>
+              {itensComProblema.map((item) => (
+                <div
+                  key={item.local_id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "10px 0",
+                    borderTop: "1px solid #fed7aa",
+                  }}
+                >
+                  <div style={{ flex: 1, fontSize: 13, color: "#7c2d12" }}>
+                    <strong>Ponto {item.ordem_ponto}</strong> · {item.fotos.length} foto(s)
+                    <div style={{ marginTop: 2 }}>{item.erro_envio}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void descartarItem(item.local_id)}
+                    disabled={sincronizando}
+                    style={{
+                      flexShrink: 0,
+                      height: 36,
+                      padding: "0 12px",
+                      borderRadius: 10,
+                      border: "1px solid #fca5a5",
+                      background: "white",
+                      color: "#b91c1c",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Descartar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <button
             onClick={() => void sincronizarAgora()}
