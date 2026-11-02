@@ -1,4 +1,4 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -20,6 +20,7 @@ import {
   type OfflineRoutePoint,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch } from "../lib/api";
+import { confirmar, mensagemDeErro, notificar } from "../lib/feedback";
 
 type LeafletDefaultIconPrototype = typeof L.Icon.Default.prototype & {
   _getIconUrl?: string;
@@ -31,6 +32,8 @@ type Props = {
   rotaSelecionada: Demanda[];
   setRotaSelecionada: Dispatch<SetStateAction<Demanda[]>>;
   posicaoAtual: [number, number] | null;
+  /** Posicao ao vivo do GPS; nula enquanto o GPS (deslocamento) estiver desligado. */
+  posicaoGps: [number, number] | null;
   deslocamentoAtivo: boolean;
   iniciarDeslocamento: () => "iniciado" | "ja_iniciado" | "gps_indisponivel" | "sem_usuario";
   pararDeslocamento: () => boolean;
@@ -207,16 +210,17 @@ function RotaPorRuas({ origem, rotaSelecionada, acompanhar }: RoutingProps) {
   const map = useMap();
 
   useEffect(() => {
-    if (!origem || rotaSelecionada.length === 0) {
-      return;
-    }
-
+    // Com GPS ligado a rota sai da posicao da equipe; desligado, liga as demandas entre si.
     const waypoints = [
-      L.latLng(origem[0], origem[1]),
+      ...(origem ? [L.latLng(origem[0], origem[1])] : []),
       ...rotaSelecionada.map((d) =>
         L.latLng(Number(d.latitude), Number(d.longitude))
       ),
     ];
+
+    if (waypoints.length < 2) {
+      return;
+    }
 
     const routing = L as LeafletRoutingNamespace;
     const routingControl = routing.Routing.control({
@@ -231,6 +235,11 @@ function RotaPorRuas({ origem, rotaSelecionada, acompanhar }: RoutingProps) {
     }).addTo(map);
 
     return () => {
+      // A biblioteca nao cancela o calculo de rota em andamento ao ser removida; quando
+      // a resposta chegava, tentava desenhar num mapa ja removido ("removeLayer" de null).
+      // Incrementar o contador interno faz ela ignorar essa resposta atrasada.
+      const interno = routingControl as unknown as { _requestCount?: number };
+      interno._requestCount = (interno._requestCount ?? 0) + 1;
       map.removeControl(routingControl);
     };
   }, [acompanhar, map, origem, rotaSelecionada]);
@@ -265,6 +274,7 @@ export default function Mapa({
   rotaSelecionada,
   setRotaSelecionada,
   posicaoAtual,
+  posicaoGps,
   deslocamentoAtivo,
   iniciarDeslocamento: iniciarDeslocamentoGlobal,
   pararDeslocamento: pararDeslocamentoGlobal,
@@ -277,10 +287,16 @@ export default function Mapa({
   const [posicao, setPosicao] = useState<[number, number] | null>(
     posicaoInicial
   );
-  const [carregandoPosicao, setCarregandoPosicao] = useState(posicao === null);
   const [watchId, setWatchId] = useState<number | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
   const [mensagem, setMensagem] = useState("");
+
+  // Mensagens informativas somem sozinhas depois de alguns segundos.
+  useEffect(() => {
+    if (!mensagem) return;
+    const temporizador = window.setTimeout(() => setMensagem(""), 6000);
+    return () => window.clearTimeout(temporizador);
+  }, [mensagem]);
   const [mostrarRota, setMostrarRota] = useState(false);
 
   function adicionarNaRota(demanda: Demanda) {
@@ -296,9 +312,16 @@ export default function Mapa({
   useEffect(() => {
     if (posicaoAtual) {
       setPosicao(posicaoAtual);
-      setCarregandoPosicao(false);
     }
   }, [posicaoAtual]);
+
+  // Origem da rota "por ruas": so muda quando a equipe sai de uma "celula" de ~75 m.
+  // Antes a rota era recalculada (uma consulta ao servidor de rotas) a cada leitura do GPS.
+  const chaveOrigemRota = posicaoGps
+    ? `${Math.round(posicaoGps[0] / 0.0007)}:${Math.round(posicaoGps[1] / 0.0007)}`
+    : "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const origemRota = useMemo(() => posicaoGps, [chaveOrigemRota]);
 
   useEffect(() => {
     function atualizarStatus() {
@@ -314,23 +337,6 @@ export default function Mapa({
     };
   }, []);
 
-  useEffect(() => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const novaPosicao: [number, number] = [
-          pos.coords.latitude,
-          pos.coords.longitude,
-        ];
-        setPosicao(novaPosicao);
-        salvarPosicaoAtual(novaPosicao);
-        setCarregandoPosicao(false);
-      },
-      (erro) => {
-        console.error("Erro ao obter localização:", erro);
-        setCarregandoPosicao(false);
-      }
-    );
-  }, []);
 
   useEffect(() => {
     salvarRotaPlanejada(usuario.id_equipe, {
@@ -344,9 +350,18 @@ export default function Mapa({
       return;
     }
 
-    const confirmar = window.confirm("Tem certeza que deseja concluir?");
+    const confirmado = await confirmar({
+      titulo: "Concluir demanda?",
+      mensagem: `${demanda.solicitacao} será marcada como concluída e enviada ao escritório.`,
+      confirmarTexto: "Concluir",
+    });
 
-    if (!confirmar) {
+    if (!confirmado) {
+      return;
+    }
+
+    if (!navigator.onLine) {
+      notificar("Sem internet. Conecte-se para concluir a demanda.", "aviso");
       return;
     }
 
@@ -363,18 +378,18 @@ export default function Mapa({
         }
       );
 
-      const dados = await resposta.json();
+      const dados = await resposta.json().catch(() => ({}));
 
       if (!resposta.ok) {
-        setMensagem(dados.erro || "Não foi possível atualizar a demanda.");
+        notificar(dados.erro || "Não foi possível atualizar a demanda.", "erro");
         return;
       }
 
       atualizarDemanda(dados.demanda);
-      setMensagem(`Demanda atualizada para ${dados.demanda.status}.`);
+      notificar(`Demanda ${dados.demanda.solicitacao ?? ""} concluída.`, "sucesso");
     } catch (error) {
       console.error(error);
-      setMensagem("Erro ao atualizar status da demanda.");
+      notificar(mensagemDeErro(error, "Erro ao atualizar status da demanda."), "erro");
     }
   }
 
@@ -474,27 +489,27 @@ export default function Mapa({
     const resultado = iniciarDeslocamentoGlobal();
 
     if (resultado === "gps_indisponivel") {
-      setMensagem("GPS nÃ£o disponÃ­vel neste aparelho.");
+      setMensagem("GPS não disponível neste aparelho.");
       return;
     }
 
     if (resultado === "sem_usuario") {
-      setMensagem("Equipe nÃ£o identificada. FaÃ§a login novamente.");
+      setMensagem("Equipe não identificada. Faça login novamente.");
       return;
     }
 
     if (resultado === "ja_iniciado") {
-      setMensagem("Deslocamento jÃ¡ iniciado.");
+      setMensagem("Deslocamento já iniciado.");
       return;
     }
 
-    setMensagem("Deslocamento iniciado.");
+    setMensagem("GPS ligado. Deslocamento iniciado.");
     setMostrarRota(false);
   }
 
   function pararDeslocamentoPersistente() {
     if (pararDeslocamentoGlobal()) {
-      setMensagem("Deslocamento finalizado.");
+      setMensagem("GPS desligado. Deslocamento finalizado.");
     }
   }
 
@@ -514,31 +529,38 @@ export default function Mapa({
       return;
     }
 
+    // Remove da fila cada ponto ja enviado: se falhar no meio, os enviados nao
+    // sao reenviados (antes a fila inteira ficava e os pontos duplicavam).
+    const restantes = [...pontosSalvos];
+    setMensagem(`Enviando ${restantes.length} ponto(s)...`);
+
     try {
-      for (const ponto of pontosSalvos) {
-        await enviarPontoParaApi(ponto);
+      while (restantes.length > 0) {
+        await enviarPontoParaApi(restantes[0]);
+        restantes.shift();
+        salvarPontosRotaPendentes(usuario.id_equipe, restantes);
       }
 
-      salvarPontosRotaPendentes(usuario.id_equipe, []);
-      setMensagem("Pontos sincronizados com sucesso.");
+      setMensagem("");
+      notificar(`${pontosSalvos.length} ponto(s) do trajeto sincronizado(s).`, "sucesso");
     } catch (error) {
       console.error("Erro ao sincronizar:", error);
-      setMensagem("Erro ao sincronizar. Os pontos continuam salvos.");
+      setMensagem("");
+      notificar(
+        `${mensagemDeErro(error, "Erro ao sincronizar.")} ${restantes.length} ponto(s) continuam salvos no aparelho.`,
+        "erro"
+      );
     }
   }
 
   function abrirRotaNoGoogleMaps() {
-    if (!posicao) {
-      setMensagem("A localização atual ainda não está disponível.");
-      return;
-    }
-
     if (rotaVisivel.length === 0) {
       setMensagem("Selecione pelo menos um ponto para abrir a rota no Google Maps.");
       return;
     }
 
-    const origem = `${posicao[0]},${posicao[1]}`;
+    // Sem GPS ligado, o Google Maps usa a localizacao do proprio celular como origem.
+    const origem = posicaoGps ? `${posicaoGps[0]},${posicaoGps[1]}` : "";
     const destinoFinal = rotaVisivel[rotaVisivel.length - 1];
     const destino = `${Number(destinoFinal.latitude)},${Number(destinoFinal.longitude)}`;
     const pontosIntermediarios = rotaVisivel
@@ -548,10 +570,13 @@ export default function Mapa({
 
     const params = new URLSearchParams({
       api: "1",
-      origin: origem,
       destination: destino,
       travelmode: "driving",
     });
+
+    if (origem) {
+      params.set("origin", origem);
+    }
 
     if (pontosIntermediarios) {
       params.set("waypoints", pontosIntermediarios);
@@ -664,19 +689,6 @@ export default function Mapa({
       )}
 
       <div style={{ position: "absolute", inset: 0 }}>
-        {carregandoPosicao ? (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#475569",
-            }}
-          >
-            Carregando localização...
-          </div>
-        ) : (
           <MapContainer
             zoom={deslocamentoAtivo ? 18 : 14}
             center={centroMapa}
@@ -686,9 +698,12 @@ export default function Mapa({
             <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
             <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
 
-            {posicao ? <Marker position={posicao} icon={iconeUsuario}>
-              <Popup>Você está aqui</Popup>
-            </Marker> : null}
+            {/* O alfinete da equipe so aparece com o GPS ligado (deslocamento iniciado). */}
+            {deslocamentoAtivo && posicaoGps ? (
+              <Marker position={posicaoGps} icon={iconeUsuario}>
+                <Popup>Você está aqui</Popup>
+              </Marker>
+            ) : null}
 
             {demandasVisiveis.map((d) => {
               const ordem =
@@ -772,17 +787,17 @@ export default function Mapa({
 
             {online && (
               <RotaPorRuas
-                origem={posicao}
+                origem={origemRota}
                 rotaSelecionada={rotaVisivel}
                 acompanhar={deslocamentoAtivo}
               />
             )}
           </MapContainer>
-        )}
       </div>
 
-      {!carregandoPosicao && !posicao ? (
+      {!deslocamentoAtivo ? (
         <div
+          role="status"
           style={{
             position: "absolute",
             top: mensagem ? 190 : 152,
@@ -790,15 +805,37 @@ export default function Mapa({
             right: 12,
             zIndex: 1000,
             padding: "8px 10px",
-            background: "rgba(254, 242, 242, 0.94)",
-            color: "#b91c1c",
+            background: "rgba(239, 246, 255, 0.95)",
+            color: "#1e3a8a",
             fontSize: 13,
+            fontWeight: 600,
             borderRadius: 14,
             backdropFilter: "blur(8px)",
           }}
         >
-          Não foi possível obter a localização da equipe. O mapa foi aberto com
-          a melhor referência disponível.
+          GPS desligado. Toque em <strong>Iniciar GPS</strong> para mostrar sua posição e
+          registrar o trajeto.
+        </div>
+      ) : deslocamentoAtivo && !posicaoGps ? (
+        <div
+          role="status"
+          style={{
+            position: "absolute",
+            top: mensagem ? 190 : 152,
+            left: 12,
+            right: 12,
+            zIndex: 1000,
+            padding: "8px 10px",
+            background: "rgba(255, 251, 235, 0.95)",
+            color: "#92400e",
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 14,
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <span className="fp-spinner" aria-hidden="true" />
+          Procurando sinal do GPS…
         </div>
       ) : null}
 
@@ -912,7 +949,7 @@ export default function Mapa({
               backdropFilter: "blur(8px)",
             }}
           >
-            Parar
+            ■ Parar GPS
           </button>
         ) : (
           <button
@@ -928,7 +965,7 @@ export default function Mapa({
               backdropFilter: "blur(8px)",
             }}
           >
-            Iniciar
+            ▶ Iniciar GPS
           </button>
         )}
 

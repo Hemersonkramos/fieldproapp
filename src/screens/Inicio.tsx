@@ -11,20 +11,23 @@ import L from "leaflet";
 import type { Demanda, UsuarioLogado } from "../App";
 import BottomNav from "../components/BottomNav";
 import {
-  carregarLevantamentosPendentes,
+  contarLevantamentosPendentes,
   carregarPontosRotaPendentes,
   carregarPosicaoAtual,
-  salvarPosicaoAtual,
 } from "../lib/offlineStorage";
 
 type LeafletDefaultIconPrototype = typeof L.Icon.Default.prototype & {
   _getIconUrl?: string;
 };
 
+const CENTRO_PADRAO_INICIO: [number, number] = [-23.55052, -46.633308];
+
 type Props = {
   usuario: UsuarioLogado;
   demandas: Demanda[];
   posicaoAtual: [number, number] | null;
+  /** Posicao ao vivo do GPS; nula enquanto o GPS (deslocamento) estiver desligado. */
+  posicaoGps: [number, number] | null;
   setTela: (tela: "inicio" | "demandas" | "mapa" | "sincronizacao") => void;
 };
 
@@ -161,14 +164,14 @@ function AjustarMapaDemandas({
   posicao,
   demandas,
 }: {
-  posicao: [number, number];
+  posicao: [number, number] | null;
   demandas: Demanda[];
 }) {
   const map = useMap();
 
   useEffect(() => {
     const coordenadas: [number, number][] = [
-      posicao,
+      ...(posicao ? [posicao] : []),
       ...demandas.map(
         (demanda) =>
           [Number(demanda.latitude), Number(demanda.longitude)] as [
@@ -183,8 +186,8 @@ function AjustarMapaDemandas({
 
     if (coordenadas.length > 1) {
       map.fitBounds(coordenadas, { padding: [36, 36], maxZoom: 14 });
-    } else {
-      map.setView(posicao, 14);
+    } else if (coordenadas.length === 1) {
+      map.setView(coordenadas[0], 14);
     }
   }, [demandas, map, posicao]);
 
@@ -195,16 +198,16 @@ export default function Inicio({
   usuario,
   demandas,
   posicaoAtual,
+  posicaoGps,
   setTela,
 }: Props) {
-  const [posicao, setPosicao] = useState<[number, number] | null>(
-    posicaoAtual ?? carregarPosicaoAtual()
-  );
+  // Ultima posicao conhecida: so serve para centralizar o mapa, sem alfinete.
+  const posicaoReferencia = posicaoAtual ?? carregarPosicaoAtual();
   const [isCompact, setIsCompact] = useState(() => window.innerWidth <= 520);
   const [pendenciasSincronizacao, setPendenciasSincronizacao] = useState(
     () =>
       carregarPontosRotaPendentes(usuario.id_equipe).length +
-      carregarLevantamentosPendentes().length
+      contarLevantamentosPendentes()
   );
 
   const andamento = demandas.filter((d) =>
@@ -231,7 +234,7 @@ export default function Inicio({
     function atualizarPendencias() {
       setPendenciasSincronizacao(
         carregarPontosRotaPendentes(usuario.id_equipe).length +
-          carregarLevantamentosPendentes().length
+          contarLevantamentosPendentes()
       );
     }
 
@@ -246,21 +249,6 @@ export default function Inicio({
     };
   }, [usuario.id_equipe]);
 
-  useEffect(() => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const novaPosicao: [number, number] = [
-          pos.coords.latitude,
-          pos.coords.longitude,
-        ];
-        setPosicao(novaPosicao);
-        salvarPosicaoAtual(novaPosicao);
-      },
-      (erro) => {
-        console.error("Erro GPS:", erro);
-      }
-    );
-  }, []);
 
   useEffect(() => {
     function atualizarViewport() {
@@ -334,6 +322,15 @@ export default function Inicio({
   }
 
   const demandasVisiveis = demandas.filter((d) => d.status !== "Finalizada");
+  const primeiraDemanda = demandasVisiveis.find(
+    (d) => Number.isFinite(Number(d.latitude)) && Number.isFinite(Number(d.longitude))
+  );
+  // O mapa abre mesmo sem GPS: centraliza no GPS, nas demandas ou na ultima posicao conhecida.
+  const centroMapa: [number, number] | null =
+    posicaoGps ??
+    (primeiraDemanda
+      ? [Number(primeiraDemanda.latitude), Number(primeiraDemanda.longitude)]
+      : posicaoReferencia ?? CENTRO_PADRAO_INICIO);
 
   return (
     <div style={{ minHeight: "100vh", background: "#f1f5f9" }}>
@@ -431,6 +428,31 @@ export default function Inicio({
               <p style={{ margin: "4px 0 0 0", fontSize: 12, color: "#64748b" }}>
                 Visualização rápida das demandas no mapa
               </p>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginTop: 8,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: posicaoGps ? "#dcfce7" : "#f1f5f9",
+                  color: posicaoGps ? "#166534" : "#64748b",
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 999,
+                    background: posicaoGps ? "#16a34a" : "#94a3b8",
+                  }}
+                />
+                {posicaoGps ? "GPS ligado" : "GPS desligado · ligue no Mapa para ver sua posição"}
+              </span>
             </div>
 
             <button
@@ -458,22 +480,25 @@ export default function Inicio({
               overflow: "hidden",
             }}
           >
-            {posicao ? (
+            {centroMapa ? (
               <MapContainer
-                center={posicao}
+                center={centroMapa}
                 zoom={14}
                 style={{ height: "100%", width: "100%" }}
               >
                 <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
                 <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
                 <AjustarMapaDemandas
-                  posicao={posicao}
+                  posicao={posicaoGps}
                   demandas={demandasVisiveis}
                 />
 
-                <Marker position={posicao} icon={iconeUsuario}>
-                  <Popup>Você está aqui</Popup>
-                </Marker>
+                {/* Alfinete da equipe so com o GPS ligado */}
+                {posicaoGps && (
+                  <Marker position={posicaoGps} icon={iconeUsuario}>
+                    <Popup>Você está aqui</Popup>
+                  </Marker>
+                )}
 
                 {demandasVisiveis.map((d) => {
                   return (

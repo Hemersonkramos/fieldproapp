@@ -204,6 +204,8 @@ export default function Demandas({ demandas, abrir, verNoMapa, setTela }: Props)
           }}
         >
           <input
+            id="fp-busca-demandas"
+            type="search"
             placeholder="Buscar solicitação"
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
@@ -218,7 +220,14 @@ export default function Demandas({ demandas, abrir, verNoMapa, setTela }: Props)
             }}
           />
 
+          {/* Com texto digitado vira "limpar busca"; antes o botao nao fazia nada. */}
           <button
+            type="button"
+            aria-label={busca ? "Limpar busca" : "Buscar"}
+            onClick={() => {
+              if (busca) setBusca("");
+              else (document.getElementById("fp-busca-demandas") as HTMLInputElement | null)?.focus();
+            }}
             style={{
               width: 48,
               height: 44,
@@ -229,7 +238,7 @@ export default function Demandas({ demandas, abrir, verNoMapa, setTela }: Props)
               fontSize: 18,
             }}
           >
-            🔍
+            {busca ? "✕" : "🔍"}
           </button>
         </div>
 
@@ -249,10 +258,12 @@ export default function Demandas({ demandas, abrir, verNoMapa, setTela }: Props)
               Nenhuma demanda encontrada.
             </div>
           ) : (
-            demandasFiltradas.map((demanda) => (
+            demandasFiltradas.map((demanda, indice) => (
               <div
                 key={demanda.id}
+                className="fp-cartao-toque"
                 style={{
+                  animationDelay: `${Math.min(indice, 8) * 40}ms`,
                   background: "white",
                   borderRadius: 24,
                   padding: 16,

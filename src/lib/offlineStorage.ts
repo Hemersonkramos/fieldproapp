@@ -1,4 +1,5 @@
 import type { Demanda } from "../App";
+import { ehFotoLocal, PREFIXO_FOTO_LOCAL, removerFotosOffline, salvarFotoOffline } from "./fotosOffline";
 
 export type CachedAttachment = {
   id: number;
@@ -35,11 +36,18 @@ export type PendingSurvey = {
   longitude: number;
   observacao: string;
   data_coleta: string;
-  fotos: Array<{
-    nome: string;
-    tipo: string;
-    conteudoBase64: string;
-  }>;
+  fotos: FotoPendente[];
+};
+
+/**
+ * Foto de um levantamento ainda nao enviado. Novas fotos ficam no IndexedDB
+ * (chaveFoto); conteudoBase64 so existe em itens antigos ou se o IndexedDB falhar.
+ */
+export type FotoPendente = {
+  nome: string;
+  tipo: string;
+  conteudoBase64?: string;
+  chaveFoto?: string;
 };
 
 export type OfflineRoutePoint = {
@@ -69,8 +77,59 @@ function lerJson<T>(chave: string, fallback: T): T {
   }
 }
 
+function gravarTexto(chave: string, texto: string) {
+  try {
+    localStorage.setItem(chave, texto);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Libera espaco tirando as copias em base64 das fotos guardadas no cache de pontos.
+ * Nao perde dados: fotos ja enviadas sao baixadas da API e as pendentes continuam
+ * inteiras na fila de sincronizacao.
+ */
+function liberarEspacoFotosCache() {
+  let liberou = false;
+
+  for (let indice = localStorage.length - 1; indice >= 0; indice -= 1) {
+    const chave = localStorage.key(indice);
+    if (!chave?.startsWith("fieldpro_pontos_")) continue;
+
+    const pontos = lerJson<CachedPoint[]>(chave, []);
+    let alterou = false;
+    const limpos = pontos.map((ponto) => ({
+      ...ponto,
+      fotos: ponto.fotos.map((foto) => {
+        // "idb:..." e so uma referencia curta ao IndexedDB: nao ocupa espaco.
+        if (!foto.data_url || ehFotoLocal(foto.data_url)) return foto;
+        alterou = true;
+        const { data_url: _dataUrl, ...semDataUrl } = foto;
+        void _dataUrl;
+        return semDataUrl;
+      }),
+    }));
+
+    if (alterou && gravarTexto(chave, JSON.stringify(limpos))) liberou = true;
+  }
+
+  return liberou;
+}
+
+/**
+ * Grava no localStorage sem lancar erro. Se o armazenamento estiver cheio, libera
+ * as copias de fotos do cache e tenta de novo. Retorna se conseguiu gravar.
+ * (Antes um erro de cota aqui, depois de o ponto ja ter subido para a API, caia no
+ * tratamento de "sem conexao" e o ponto era enfileirado de novo, duplicando.)
+ */
 function salvarJson(chave: string, valor: unknown) {
-  localStorage.setItem(chave, JSON.stringify(valor));
+  const texto = JSON.stringify(valor);
+  if (gravarTexto(chave, texto)) return true;
+  if (liberarEspacoFotosCache() && gravarTexto(chave, texto)) return true;
+  console.warn(`Armazenamento do aparelho cheio: nao foi possivel gravar ${chave}.`);
+  return false;
 }
 
 function chaveDemandas(idEquipe: number) {
@@ -163,7 +222,26 @@ export function carregarLevantamentosPendentes() {
 }
 
 export function salvarLevantamentosPendentes(pendentes: PendingSurvey[]) {
-  salvarJson("fieldpro_levantamentos_pendentes", pendentes);
+  // A fila de sincronizacao nao pode falhar em silencio: a equipe precisa saber.
+  if (!salvarJson("fieldpro_levantamentos_pendentes", pendentes)) {
+    throw new Error(
+      "Armazenamento do aparelho cheio. Sincronize os levantamentos pendentes antes de coletar mais fotos."
+    );
+  }  gravarTexto(CHAVE_TOTAL_PENDENTES, String(pendentes.length));
+}
+
+const CHAVE_TOTAL_PENDENTES = "fieldpro_levantamentos_pendentes_total";
+
+/**
+ * Quantidade de levantamentos pendentes sem ler a fila inteira (que guarda as fotos
+ * em base64 e pode ter varios MB). Usado pelo selo da barra inferior.
+ */
+export function contarLevantamentosPendentes() {
+  const total = localStorage.getItem(CHAVE_TOTAL_PENDENTES);
+  if (total !== null) return Number(total) || 0;
+  const quantidade = carregarLevantamentosPendentes().length;
+  gravarTexto(CHAVE_TOTAL_PENDENTES, String(quantidade));
+  return quantidade;
 }
 
 export function adicionarLevantamentoPendente(pendente: PendingSurvey) {
@@ -172,10 +250,43 @@ export function adicionarLevantamentoPendente(pendente: PendingSurvey) {
 }
 
 export function removerLevantamentoPendente(localId: number) {
-  const restantes = carregarLevantamentosPendentes().filter(
-    (item) => item.local_id !== localId
-  );
+  const atuais = carregarLevantamentosPendentes();
+  const removido = atuais.find((item) => item.local_id === localId);
+  const restantes = atuais.filter((item) => item.local_id !== localId);
   salvarLevantamentosPendentes(restantes);
+  // Apaga do IndexedDB as fotos que ja subiram (ou foram descartadas).
+  if (removido) {
+    void removerFotosOffline(
+      removido.fotos.map((foto) => foto.chaveFoto).filter((chave): chave is string => Boolean(chave))
+    );
+  }
+}
+
+/**
+ * Guarda as fotos de um levantamento offline no IndexedDB e devolve as fotos para a
+ * fila (so com a chave). Se o IndexedDB falhar, mantem o base64 como antes.
+ */
+export async function guardarFotosPendentes(
+  localId: number,
+  fotos: Array<{ nome: string; tipo: string; conteudoBase64: string }>
+): Promise<FotoPendente[]> {
+  return Promise.all(
+    fotos.map(async (foto, indice) => {
+      const chaveFoto = `${localId}-${indice}`;
+      try {
+        await salvarFotoOffline(chaveFoto, foto.conteudoBase64);
+        return { nome: foto.nome, tipo: foto.tipo, chaveFoto };
+      } catch (erro) {
+        console.warn("IndexedDB indisponível; foto mantida no armazenamento local.", erro);
+        return { nome: foto.nome, tipo: foto.tipo, conteudoBase64: foto.conteudoBase64 };
+      }
+    })
+  );
+}
+
+/** Valor para exibir a foto pendente: referencia "idb:" ou o proprio base64. */
+export function referenciaFotoPendente(foto: FotoPendente) {
+  return foto.chaveFoto ? `${PREFIXO_FOTO_LOCAL}${foto.chaveFoto}` : foto.conteudoBase64;
 }
 
 export function contarFotosPendentes() {
@@ -270,4 +381,47 @@ export async function urlParaDataUrl(url: string) {
 
     leitor.readAsDataURL(blob);
   });
+}
+
+function idsPendentesDaSolicitacao(idSolicitacao: number) {
+  return new Set(
+    carregarLevantamentosPendentes()
+      .filter((pendente) => Number(pendente.id_solicitacao) === Number(idSolicitacao))
+      .map((pendente) => pendente.local_id)
+  );
+}
+
+/**
+ * Junta os pontos vindos da API com os pontos desta solicitacao que ainda estao
+ * so no aparelho. Sem isso, ao abrir a tela com internet, os pontos ainda nao
+ * sincronizados sumiam da lista (embora continuassem guardados).
+ */
+export function mesclarPontosPendentes<T extends { id: number }>(
+  idSolicitacao: number,
+  pontosServidor: T[]
+): T[] {
+  const idsPendentes = idsPendentesDaSolicitacao(idSolicitacao);
+  if (idsPendentes.size === 0) return pontosServidor;
+
+  const locais = carregarPontosCache(idSolicitacao).filter((ponto) => idsPendentes.has(ponto.id));
+  return [...(locais as unknown as T[]), ...pontosServidor];
+}
+
+export function ehLevantamentoPendente(localId: number) {
+  return carregarLevantamentosPendentes().some((pendente) => pendente.local_id === localId);
+}
+
+/** Remove uma foto (pela posicao) de um levantamento que ainda nao subiu. */
+export function removerFotoDeLevantamentoPendente(localId: number, indiceFoto: number) {
+  const pendentes = carregarLevantamentosPendentes();
+  const chave = pendentes.find((p) => p.local_id === localId)?.fotos[indiceFoto]?.chaveFoto;
+  if (chave) void removerFotosOffline([chave]);
+  const atualizados = pendentes
+    .map((pendente) =>
+      pendente.local_id !== localId
+        ? pendente
+        : { ...pendente, fotos: pendente.fotos.filter((_, indice) => indice !== indiceFoto) }
+    )
+    .filter((pendente) => pendente.fotos.length > 0);
+  salvarLevantamentosPendentes(atualizados);
 }

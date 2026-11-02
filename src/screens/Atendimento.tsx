@@ -20,6 +20,13 @@ import {
   adicionarLevantamentoPendente,
   adicionarPontoCache,
   carregarAnexosCache,
+  carregarLevantamentosPendentes,
+  carregarPosicaoAtual,
+  guardarFotosPendentes,
+  salvarPosicaoAtual,
+  mesclarPontosPendentes,
+  referenciaFotoPendente,
+  type FotoPendente,
   carregarPontosCache,
   salvarAnexosCache,
   salvarPontosCache,
@@ -27,6 +34,7 @@ import {
   type CachedPoint,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch, authUrl } from "../lib/api";
+import { confirmar, mensagemDeErro, notificar } from "../lib/feedback";
 
 type Anexo = CachedAttachment;
 type PontoColetado = CachedPoint;
@@ -264,6 +272,7 @@ export default function Atendimento({
   );
   const [fotos, setFotos] = useState<File[]>([]);
   const [proximaOrdem, setProximaOrdem] = useState(1);
+  const [concluindo, setConcluindo] = useState(false);
   const [coletaPontoIniciada, setColetaPontoIniciada] = useState(
     Boolean(rascunhoInicial)
   );
@@ -363,8 +372,12 @@ export default function Atendimento({
           ? await anexosResposta.json()
           : carregarAnexosCache(demanda.id);
         const pontosDados: PontoColetado[] = pontosResposta.ok
-          ? await pontosResposta.json()
+          ? mesclarPontosPendentes(demanda.id, (await pontosResposta.json()) as PontoColetado[])
           : carregarPontosCache(demanda.id);
+
+        if (!pontosResposta.ok || !anexosResposta.ok) {
+          notificar("Não foi possível atualizar tudo do servidor. Parte dos dados vem do aparelho.", "aviso");
+        }
 
         if (!ativo) {
           return;
@@ -391,6 +404,12 @@ export default function Atendimento({
         const pontosCache = carregarPontosCache(demanda.id);
         setAnexos(anexosCache);
         setPontosColetados(pontosCache);
+        notificar(
+          navigator.onLine
+            ? "Não foi possível atualizar o levantamento. Mostrando os dados salvos no aparelho."
+            : "Sem internet. Mostrando os dados salvos no aparelho.",
+          "aviso"
+        );
 
         const maiorOrdem = pontosCache.reduce((maior, ponto, index) => {
           const ordemAtual = ponto.ordem_ponto || pontosCache.length - index;
@@ -411,7 +430,8 @@ export default function Atendimento({
   function coletarPonto() {
     if (!navigator.geolocation) {
       setColetaPontoIniciada(false);
-      setMensagem("GPS nao disponivel.");
+      setMensagem("GPS não disponível neste aparelho.");
+      notificar("GPS não disponível neste aparelho.", "erro");
       return;
     }
 
@@ -431,6 +451,8 @@ export default function Atendimento({
 
         setLatitude(pos.coords.latitude);
         setLongitude(pos.coords.longitude);
+        // Guarda como ultima posicao conhecida (referencia se o GPS falhar depois).
+        salvarPosicaoAtual([pos.coords.latitude, pos.coords.longitude]);
         setPrecisaoGps(
           Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null
         );
@@ -439,17 +461,48 @@ export default function Atendimento({
           "Confira o ponto no mapa. Toque para corrigir se necessario e confirme o local."
         );
       },
-      () => {
+      (erro) => {
         if (coletaLocalizacaoIdRef.current !== coletaAtualId) {
           return;
         }
 
-        setColetaPontoIniciada(false);
-        setMensagem("Erro ao obter localizacao.");
+        // Sem GPS a coleta continua: o ponto e marcado a mao no mapa, a partir da
+        // ultima posicao conhecida (ou do local da demanda), e a equipe confirma.
+        const ultimaPosicao = carregarPosicaoAtual();
+        const referencia: [number, number] | null =
+          ultimaPosicao ??
+          (Number.isFinite(Number(demanda.latitude)) && Number.isFinite(Number(demanda.longitude))
+            ? [Number(demanda.latitude), Number(demanda.longitude)]
+            : null);
+
+        const motivo =
+          erro.code === erro.PERMISSION_DENIED
+            ? "Localização não permitida para o FieldPro."
+            : erro.code === erro.TIMEOUT
+              ? "O GPS demorou para responder."
+              : "Sem sinal de GPS no momento.";
+
+        if (!referencia) {
+          setColetaPontoIniciada(false);
+          setMensagem(`${motivo} Verifique a localização do aparelho e tente de novo.`);
+          notificar(`${motivo} Verifique a localização do aparelho e tente de novo.`, "erro");
+          return;
+        }
+
+        setLatitude(referencia[0]);
+        setLongitude(referencia[1]);
+        setPrecisaoGps(null);
+        setAguardandoConfirmacaoLocal(true);
+        setMensagem(
+          `${motivo} Toque no mapa ou arraste o alfinete azul até o local do ponto e depois confirme.`
+        );
+        notificar(`${motivo} Marque o ponto no mapa manualmente.`, "aviso");
       },
       {
         enableHighAccuracy: true,
-        timeout: 10000,
+        // Mais tempo para o GPS "pegar" sem internet; aceita leitura recente (ate 15s).
+        timeout: 20000,
+        maximumAge: 15000,
       }
     );
   }
@@ -465,6 +518,21 @@ export default function Atendimento({
     setObservacao("");
     setFotos([]);
     setMensagem("Coleta cancelada. Você pode iniciar um novo ponto.");
+  }
+
+  async function pedirCancelamentoColeta() {
+    // So pergunta quando ha algo a perder (fotos ja tiradas neste ponto).
+    if (fotos.length > 0) {
+      const confirmado = await confirmar({
+        titulo: "Cancelar a coleta deste ponto?",
+        mensagem: `As ${fotos.length} foto(s) tiradas neste ponto serão descartadas.`,
+        confirmarTexto: "Descartar ponto",
+        cancelarTexto: "Continuar coletando",
+        perigo: true,
+      });
+      if (!confirmado) return;
+    }
+    cancelarColetaPonto();
   }
 
   function confirmarLocalDoPonto() {
@@ -542,6 +610,8 @@ export default function Atendimento({
       return;
     }
 
+    let enviadoParaApi = false;
+
     try {
       setCarregando(true);
       setMensagem("Salvando...");
@@ -558,6 +628,7 @@ export default function Atendimento({
       };
 
       let idPonto = Number(`${Date.now()}${proximaOrdem}`);
+      let fotosGuardadas: FotoPendente[] | null = null;
 
       if (modoDemonstracao) {
         idPonto = -Number(`${Date.now()}${proximaOrdem}`);
@@ -577,7 +648,10 @@ export default function Atendimento({
         }
 
         idPonto = dados.id_ponto_coletado;
+        enviadoParaApi = true;
       } else {
+        // Sem internet: fotos vao para o IndexedDB e o ponto entra na fila.
+        fotosGuardadas = await guardarFotosPendentes(idPonto, fotosPayload);
         adicionarLevantamentoPendente({
           local_id: idPonto,
           id_solicitacao: demanda.id,
@@ -586,7 +660,7 @@ export default function Atendimento({
           longitude,
           observacao,
           data_coleta: new Date().toISOString(),
-          fotos: fotosPayload,
+          fotos: fotosGuardadas,
         });
       }
 
@@ -604,12 +678,32 @@ export default function Atendimento({
           nome_arquivo: foto.nome,
           caminho_arquivo: "",
           data_foto: new Date().toISOString(),
-          data_url: foto.conteudoBase64,
+          data_url: fotosGuardadas
+            ? referenciaFotoPendente(fotosGuardadas[index])
+            : foto.conteudoBase64,
         })),
       };
 
       setPontosColetados((prev) => [novoPonto, ...prev]);
-      adicionarPontoCache(demanda.id, novoPonto);
+
+      if (enviadoParaApi) {
+        // Ja esta na API: o cache nao guarda as fotos em base64 (que enchiam o
+        // armazenamento do aparelho) e a lista e recarregada com os caminhos reais.
+        adicionarPontoCache(demanda.id, {
+          ...novoPonto,
+          fotos: novoPonto.fotos.map((foto) => ({ ...foto, data_url: undefined })),
+        });
+        void authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/pontos`)
+          .then(async (resposta) => {
+            if (!resposta.ok) return;
+            const pontosAtualizados = (await resposta.json()) as PontoColetado[];
+            salvarPontosCache(demanda.id, mesclarPontosPendentes(demanda.id, pontosAtualizados));
+          })
+          .catch(() => undefined);
+      } else {
+        adicionarPontoCache(demanda.id, novoPonto);
+      }
+
       setMensagem(
         navigator.onLine && !modoDemonstracao
           ? `Ponto ${proximaOrdem} salvo com sucesso.`
@@ -628,19 +722,43 @@ export default function Atendimento({
       setProximaOrdem((prev) => prev + 1);
     } catch (error) {
       console.error(error);
+
+      // O ponto ja foi gravado na API: nao enfileira de novo (evita duplicar).
+      if (enviadoParaApi) {
+        setMensagem("Ponto salvo, mas houve um erro ao atualizar a tela. Abra o levantamento novamente.");
+        return;
+      }
+
+      // Armazenamento cheio: nao adianta tentar guardar no aparelho de novo.
+      if (error instanceof Error && error.message.startsWith("Armazenamento do aparelho cheio")) {
+        setMensagem(error.message);
+        return;
+      }
+
       const localId = Number(`${Date.now()}${proximaOrdem}`);
       const fotosPayload = await montarFotosPayload(fotos);
 
-      adicionarLevantamentoPendente({
-        local_id: localId,
-        id_solicitacao: demanda.id,
-        ordem_ponto: proximaOrdem,
-        latitude,
-        longitude,
-        observacao,
-        data_coleta: new Date().toISOString(),
-        fotos: fotosPayload,
-      });
+      let fotosPendentes: FotoPendente[];
+      try {
+        fotosPendentes = await guardarFotosPendentes(localId, fotosPayload);
+        adicionarLevantamentoPendente({
+          local_id: localId,
+          id_solicitacao: demanda.id,
+          ordem_ponto: proximaOrdem,
+          latitude,
+          longitude,
+          observacao,
+          data_coleta: new Date().toISOString(),
+          fotos: fotosPendentes,
+        });
+      } catch (erroArmazenamento) {
+        setMensagem(
+          erroArmazenamento instanceof Error
+            ? erroArmazenamento.message
+            : "Nao foi possivel guardar o ponto no aparelho."
+        );
+        return;
+      }
 
       const novoPonto: PontoColetado = {
         id: localId,
@@ -656,7 +774,7 @@ export default function Atendimento({
           nome_arquivo: foto.nome,
           caminho_arquivo: "",
           data_foto: new Date().toISOString(),
-          data_url: foto.conteudoBase64,
+          data_url: referenciaFotoPendente(fotosPendentes[index]),
         })),
       };
 
@@ -683,12 +801,50 @@ export default function Atendimento({
       return;
     }
 
-    await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`, {
-      method: "PUT",
-    });
+    if (coletaPontoIniciada) {
+      notificar("Salve ou cancele o ponto em coleta antes de concluir.", "aviso");
+      return;
+    }
 
-    setMensagem("Levantamento concluido.");
-    setTimeout(voltar, 800);
+    // Pontos desta demanda ainda no aparelho: concluir antes de sincronizar faria
+    // o escritorio receber a demanda concluida sem esses pontos.
+    const pendentesDaDemanda = carregarLevantamentosPendentes().filter(
+      (pendente) => pendente.id_solicitacao === demanda.id
+    ).length;
+
+    if (pendentesDaDemanda > 0) {
+      notificar(
+        `Existem ${pendentesDaDemanda} ponto(s) desta demanda guardados no aparelho. Sincronize antes de concluir.`,
+        "aviso"
+      );
+      return;
+    }
+
+    if (!navigator.onLine) {
+      notificar("Sem internet. Conecte-se para concluir o levantamento.", "aviso");
+      return;
+    }
+
+    try {
+      setConcluindo(true);
+      const resposta = await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`, {
+        method: "PUT",
+      });
+      const dados = await resposta.json().catch(() => ({}));
+
+      if (!resposta.ok) {
+        throw new Error(dados.erro || "Não foi possível concluir o levantamento.");
+      }
+
+      notificar("Levantamento concluído e enviado ao escritório.", "sucesso");
+      setMensagem("Levantamento concluído.");
+      setTimeout(voltar, 800);
+    } catch (error) {
+      console.error(error);
+      notificar(mensagemDeErro(error, "Não foi possível concluir o levantamento."), "erro");
+    } finally {
+      setConcluindo(false);
+    }
   }
 
   const posicaoPonto: [number, number] | null =
@@ -891,7 +1047,7 @@ export default function Atendimento({
 
           <button
             onClick={
-              coletaPontoIniciada ? cancelarColetaPonto : coletarPonto
+              coletaPontoIniciada ? () => void pedirCancelamentoColeta() : coletarPonto
             }
             style={{
               marginTop: 20,
@@ -1131,7 +1287,26 @@ export default function Atendimento({
             }}
           />
 
-          {mensagem && <div style={{ marginTop: 10 }}>{mensagem}</div>}
+          {mensagem && (
+            <div
+              key={mensagem}
+              role="status"
+              className="fp-tela"
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: 12,
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                color: "#1e3a8a",
+                fontSize: 14,
+                fontWeight: 600,
+                textAlign: "left",
+              }}
+            >
+              {mensagem}
+            </div>
+          )}
 
           <button
             onClick={() => void salvarPonto()}
@@ -1149,7 +1324,7 @@ export default function Atendimento({
             }}
           >
             {carregando
-              ? "Salvando..."
+              ? <><span className="fp-spinner" aria-hidden="true" />Salvando...</>
               : fotos.length === 0
                 ? "Adicione uma foto para salvar"
                 : coletaFotosAtiva
@@ -1157,8 +1332,20 @@ export default function Atendimento({
                   : `Salvar Ponto ${proximaOrdem}`}
           </button>
 
+          {/* Durante a coleta de um ponto, concluir e abrir a galeria ficam bloqueados:
+              sair da tela no meio da coleta perderia o ponto em andamento. */}
+          {coletaPontoIniciada && (
+            <div className="fp-dica-bloqueio" role="status">
+              Ponto em coleta: salve ou cancele o ponto para concluir o
+              levantamento ou ver a galeria.
+            </div>
+          )}
+
           <button
+            type="button"
             onClick={() => setRevisaoConclusaoAberta(true)}
+            disabled={coletaPontoIniciada || carregando || concluindo}
+            aria-disabled={coletaPontoIniciada || carregando || concluindo}
             style={{
               marginTop: 10,
               width: "100%",
@@ -1167,13 +1354,25 @@ export default function Atendimento({
               color: "white",
               border: "none",
               borderRadius: 16,
+              fontWeight: 700,
+              cursor: "pointer",
             }}
           >
-            Concluir levantamento
+            {concluindo ? (
+              <>
+                <span className="fp-spinner" aria-hidden="true" />
+                Concluindo...
+              </>
+            ) : (
+              "Concluir levantamento"
+            )}
           </button>
 
           <button
+            type="button"
             onClick={abrirGaleria}
+            disabled={coletaPontoIniciada || carregando || concluindo}
+            aria-disabled={coletaPontoIniciada || carregando || concluindo}
             style={{
               width: "100%",
               height: 52,
@@ -1541,7 +1740,7 @@ export default function Atendimento({
             <button
               type="button"
               onClick={
-                coletaPontoIniciada ? cancelarColetaPonto : coletarPonto
+                coletaPontoIniciada ? () => void pedirCancelamentoColeta() : coletarPonto
               }
               style={{
                 width: "100%",

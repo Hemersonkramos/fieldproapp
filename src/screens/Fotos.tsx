@@ -6,10 +6,17 @@ import {
   carregarPontosCache,
   salvarPontosCache,
   atualizarPontosCache,
+  carregarLevantamentosPendentes,
+  ehLevantamentoPendente,
+  mesclarPontosPendentes,
+  removerFotoDeLevantamentoPendente,
+  removerLevantamentoPendente,
   type CachedPhoto,
   type CachedPoint,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch, authUrl } from "../lib/api";
+import { ehFotoLocal, resolverFotoLocal } from "../lib/fotosOffline";
+import { confirmar, mensagemDeErro, notificar } from "../lib/feedback";
 
 type Foto = CachedPhoto;
 type PontoColetado = CachedPoint;
@@ -87,6 +94,40 @@ export default function Fotos({
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [processandoId, setProcessandoId] = useState<number | null>(null);
+  // Fotos tiradas sem internet ficam no IndexedDB ("idb:..."): carrega o conteudo para exibir.
+  const [fotosLocais, setFotosLocais] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let ativo = true;
+    const referencias = pontos
+      .flatMap((ponto) => ponto.fotos.map((foto) => foto.data_url))
+      .filter((ref): ref is string => ehFotoLocal(ref));
+
+    void Promise.all(
+      referencias.map(async (ref) => [ref, await resolverFotoLocal(ref)] as const)
+    ).then((pares) => {
+      if (!ativo) return;
+      const mapa: Record<string, string> = {};
+      pares.forEach(([ref, conteudo]) => {
+        if (conteudo) mapa[ref] = conteudo;
+      });
+      setFotosLocais(mapa);
+    });
+
+    return () => {
+      ativo = false;
+    };
+  }, [pontos]);
+
+  // Pontos que ainda estao so no aparelho (coletados sem internet).
+  const idsPendentes = new Set(
+    modoDemonstracao ? [] : carregarLevantamentosPendentes().map((pendente) => pendente.local_id)
+  );
+
+  function fonteFoto(foto: Foto) {
+    if (ehFotoLocal(foto.data_url)) return fotosLocais[foto.data_url as string] ?? "";
+    return foto.data_url || authUrl(foto.caminho_arquivo);
+  }
 
   useEffect(() => {
     let ativo = true;
@@ -107,24 +148,33 @@ export default function Fotos({
 
         const resposta = await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/pontos`);
 
-        const dados = await resposta.json();
+        const dados = await resposta.json().catch(() => null);
 
-        if (!resposta.ok) {
+        if (!resposta.ok || !Array.isArray(dados)) {
           if (ativo) {
-            setErro(dados.erro || "Erro ao carregar galeria.");
+            // Mostra o que ha no aparelho e explica por que nao atualizou.
+            setPontos(carregarPontosCache(demanda.id));
+            setErro((dados && dados.erro) || "Erro ao carregar galeria.");
           }
           return;
         }
 
         if (ativo) {
-          setPontos(dados);
-          salvarPontosCache(demanda.id, dados);
+          const pontosMesclados = mesclarPontosPendentes(demanda.id, dados as PontoColetado[]);
+          setPontos(pontosMesclados);
+          salvarPontosCache(demanda.id, pontosMesclados);
         }
       } catch (error) {
         console.error(error);
         if (ativo) {
           setPontos(carregarPontosCache(demanda.id));
           setErro("");
+          notificar(
+            navigator.onLine
+              ? `${mensagemDeErro(error)} Mostrando as fotos salvas no aparelho.`
+              : "Sem internet. Mostrando as fotos salvas no aparelho.",
+            "aviso"
+          );
         }
       } finally {
         if (ativo) {
@@ -153,9 +203,41 @@ export default function Fotos({
   }
 
   async function excluirFoto(foto: Foto) {
-    const confirmar = window.confirm("Tem certeza que deseja excluir esta foto?");
+    const confirmado = await confirmar({
+      titulo: "Excluir esta foto?",
+      mensagem: "A foto será apagada do levantamento. Essa ação não pode ser desfeita.",
+      confirmarTexto: "Excluir foto",
+      perigo: true,
+    });
 
-    if (!confirmar) {
+    if (!confirmado) {
+      return;
+    }
+
+    // Foto de um ponto que ainda nao subiu: remove so do aparelho.
+    if (!modoDemonstracao && ehLevantamentoPendente(foto.id_ponto_coletado)) {
+      try {
+        removerFotoDeLevantamentoPendente(foto.id_ponto_coletado, Math.abs(foto.id) - 1);
+        const semFoto = (lista: PontoColetado[]) =>
+          lista
+            .map((ponto) =>
+              ponto.id !== foto.id_ponto_coletado
+                ? ponto
+                : {
+                    ...ponto,
+                    // Renumera (-1, -2, ...) para continuar alinhado com a fila pendente.
+                    fotos: ponto.fotos
+                      .filter((item) => item.id !== foto.id)
+                      .map((item, indice) => ({ ...item, id: -(indice + 1) })),
+                  }
+            )
+            .filter((ponto) => ponto.id !== foto.id_ponto_coletado || ponto.fotos.length > 0);
+        setPontos(semFoto);
+        atualizarPontosCache(demanda.id, semFoto);
+        notificar("Foto removida do aparelho.", "sucesso");
+      } catch (error) {
+        notificar(mensagemDeErro(error), "erro");
+      }
       return;
     }
 
@@ -178,12 +260,14 @@ export default function Fotos({
         method: "DELETE",
       });
 
-      const dados = await resposta.json();
+      const dados = await resposta.json().catch(() => ({}));
 
       if (!resposta.ok) {
-        setErro(dados.erro || "Erro ao excluir foto.");
+        notificar(dados.erro || "Erro ao excluir foto.", "erro");
         return;
       }
+
+      notificar("Foto excluída.", "sucesso");
 
       setPontos((prev) =>
         prev.map((ponto) =>
@@ -207,18 +291,32 @@ export default function Fotos({
       );
     } catch (error) {
       console.error(error);
-      setErro("Erro ao conectar com a API.");
+      notificar(mensagemDeErro(error, "Erro ao conectar com a API."), "erro");
     } finally {
       setProcessandoId(null);
     }
   }
 
   async function excluirPonto(ponto: PontoColetado) {
-    const confirmar = window.confirm(
-      "Tem certeza que deseja excluir este ponto e todas as fotos dele?"
-    );
+    const confirmado = await confirmar({
+      titulo: `Excluir o ponto ${ponto.ordem_ponto ?? ""}?`.replace(" ?", "?"),
+      mensagem: `O ponto e ${ponto.fotos.length} foto(s) serão apagados. Essa ação não pode ser desfeita.`,
+      confirmarTexto: "Excluir ponto",
+      perigo: true,
+    });
 
-    if (!confirmar) {
+    if (!confirmado) {
+      return;
+    }
+
+    // Ponto que ainda nao subiu: tira da fila de sincronizacao, sem chamar a API.
+    if (!modoDemonstracao && ehLevantamentoPendente(ponto.id)) {
+      removerLevantamentoPendente(ponto.id);
+      setPontos((prev) => prev.filter((item) => item.id !== ponto.id));
+      atualizarPontosCache(demanda.id, (pontosCache) =>
+        pontosCache.filter((item) => item.id !== ponto.id)
+      );
+      notificar("Ponto removido do aparelho.", "sucesso");
       return;
     }
 
@@ -238,12 +336,14 @@ export default function Fotos({
         }
       );
 
-      const dados = await resposta.json();
+      const dados = await resposta.json().catch(() => ({}));
 
       if (!resposta.ok) {
-        setErro(dados.erro || "Erro ao excluir ponto.");
+        notificar(dados.erro || "Erro ao excluir ponto.", "erro");
         return;
       }
+
+      notificar("Ponto excluído.", "sucesso");
 
       setPontos((prev) => prev.filter((item) => item.id !== ponto.id));
       atualizarPontosCache(demanda.id, (pontosCache) =>
@@ -251,7 +351,7 @@ export default function Fotos({
       );
     } catch (error) {
       console.error(error);
-      setErro("Erro ao conectar com a API.");
+      notificar(mensagemDeErro(error, "Erro ao conectar com a API."), "erro");
     } finally {
       setProcessandoId(null);
     }
@@ -429,6 +529,22 @@ export default function Fotos({
                   <h3 style={{ margin: 0, color: "#0f172a" }}>
                     Ponto {ponto.ordem_ponto || index + 1}
                   </h3>
+                  {idsPendentes.has(ponto.id) && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        marginTop: 6,
+                        padding: "3px 10px",
+                        borderRadius: 999,
+                        background: "#ffedd5",
+                        color: "#9a3412",
+                        fontSize: 11,
+                        fontWeight: 800,
+                      }}
+                    >
+                      ⏳ Salvo no aparelho · aguardando sincronização
+                    </span>
+                  )}
 
                   <p
                     style={{
@@ -539,7 +655,8 @@ export default function Fotos({
                       }}
                     >
                       <a
-                        href={foto.data_url || authUrl(foto.caminho_arquivo)}
+                        // Foto so no aparelho (base64) nao abre em outra aba: o navegador bloqueia.
+                        href={foto.data_url ? undefined : authUrl(foto.caminho_arquivo)}
                         target="_blank"
                         rel="noreferrer"
                         style={{
@@ -548,7 +665,8 @@ export default function Fotos({
                         }}
                       >
                         <img
-                          src={foto.data_url || authUrl(foto.caminho_arquivo)}
+                          src={fonteFoto(foto) || undefined}
+                          loading="lazy"
                           alt={foto.nome_arquivo}
                           style={{
                             width: "100%",

@@ -9,6 +9,8 @@ import {
   salvarPontosRotaPendentes,
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch } from "../lib/api";
+import { lerFotoOffline } from "../lib/fotosOffline";
+import { mensagemDeErro, notificar } from "../lib/feedback";
 import type { UsuarioLogado } from "../App";
 
 type Props = {
@@ -138,6 +140,7 @@ export default function Sincronizacao({
 
     if (!navigator.onLine) {
       setMensagem("Sem internet. Tente sincronizar quando estiver online.");
+      notificar("Sem internet. Tente sincronizar quando estiver online.", "aviso");
       return;
     }
 
@@ -215,11 +218,26 @@ export default function Sincronizacao({
           setMensagem(
             `Preparando foto ${index + 1} de ${levantamento.fotos.length} do levantamento...`
           );
+          // Fotos novas estao no IndexedDB (chaveFoto); as antigas, em base64 na propria fila.
+          const conteudo =
+            foto.conteudoBase64 ?? (foto.chaveFoto ? await lerFotoOffline(foto.chaveFoto) : undefined);
+
+          if (!conteudo) {
+            console.warn("Foto pendente não encontrada no aparelho:", foto.chaveFoto);
+            continue;
+          }
+
           fotosPayload.push({
             nome: foto.nome || `foto-pendente-${levantamento.local_id}-${index + 1}.jpg`,
             tipo: "image/jpeg",
-            conteudoBase64: await recomprimirBase64Imagem(foto.conteudoBase64),
+            conteudoBase64: await recomprimirBase64Imagem(conteudo),
           });
+        }
+
+        if (fotosPayload.length === 0) {
+          throw new Error(
+            `As fotos do ponto ${levantamento.ordem_ponto} não foram encontradas no aparelho.`
+          );
         }
 
         setMensagem(
@@ -237,11 +255,13 @@ export default function Sincronizacao({
             latitude: levantamento.latitude,
             longitude: levantamento.longitude,
             observacao: levantamento.observacao,
+            // Horario em que o ponto foi coletado (sem internet), nao o da sincronizacao.
+            data_coleta: levantamento.data_coleta,
             fotos: fotosPayload,
           }),
         }, TIMEOUT_LEVANTAMENTO_MS);
 
-        const dados = await resposta.json();
+        const dados = await resposta.json().catch(() => ({}));
 
         if (!resposta.ok) {
           throw new Error(dados.erro || "Erro ao sincronizar levantamento.");
@@ -263,15 +283,14 @@ export default function Sincronizacao({
       setUltimaSync(agora);
       setProgresso(100);
       carregarPendencias();
-      setMensagem("Sincronizacao concluida com sucesso.");
+      setMensagem("Sincronização concluída com sucesso.");
+      notificar("Tudo sincronizado com o escritório.", "sucesso");
     } catch (error) {
       console.error(error);
       carregarPendencias();
-      setMensagem(
-        error instanceof Error
-          ? `Erro ao sincronizar: ${error.message}`
-          : "Erro ao sincronizar. Os dados continuam salvos no aparelho."
-      );
+      const texto = `Erro ao sincronizar: ${mensagemDeErro(error)} Os dados continuam salvos no aparelho.`;
+      setMensagem(texto);
+      notificar(texto, "erro");
     } finally {
       setSincronizando(false);
     }

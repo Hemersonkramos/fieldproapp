@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronLeft, Smartphone } from "lucide-react";
 import type { Equipe, UsuarioLogado } from "../App";
 import { API_BASE_URL, salvarToken } from "../lib/api";
+import { mensagemDeErro } from "../lib/feedback";
 
 type Props = {
   equipe: Equipe | null;
@@ -27,6 +28,20 @@ export default function Login({
       return;
     }
 
+    if (!user.trim() || !password) {
+      setErro("Informe usuário e senha.");
+      return;
+    }
+
+    if (!navigator.onLine) {
+      setErro("Sem internet. O login precisa de conexão.");
+      return;
+    }
+
+    // O servidor pode demorar para "acordar"; espera ate 45s antes de desistir.
+    const controlador = new AbortController();
+    const limite = window.setTimeout(() => controlador.abort(), 45000);
+
     try {
       setErro("");
       setCarregando(true);
@@ -36,13 +51,24 @@ export default function Login({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ user, password }),
+        body: JSON.stringify({ user: user.trim(), password }),
+        signal: controlador.signal,
       });
 
-      const dados = await resposta.json();
+      const dados = await resposta.json().catch(() => ({}));
 
       if (!resposta.ok) {
-        setErro(dados.erro || "Erro ao fazer login");
+        setErro(
+          dados.erro ||
+            (resposta.status === 429
+              ? "Muitas tentativas. Aguarde alguns minutos."
+              : "Erro ao fazer login.")
+        );
+        return;
+      }
+
+      if (typeof dados.token !== "string" || !dados.usuario) {
+        setErro("O servidor retornou uma resposta inválida. Tente novamente.");
         return;
       }
 
@@ -50,8 +76,9 @@ export default function Login({
       onLogin({ ...dados.usuario, token: dados.token });
     } catch (error) {
       console.error(error);
-      setErro("Não foi possível conectar com a API");
+      setErro(mensagemDeErro(error, "Não foi possível conectar com a API."));
     } finally {
+      window.clearTimeout(limite);
       setCarregando(false);
     }
   }
@@ -205,7 +232,15 @@ export default function Login({
                 placeholder="Senha"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setErro("");
+                }}
+                onKeyDown={(e) => {
+                  // Enter no teclado do celular ja entra.
+                  if (e.key === "Enter" && !carregando) void fazerLogin();
+                }}
                 style={{
                   width: "100%",
                   height: 48,
@@ -224,6 +259,8 @@ export default function Login({
 
               {erro ? (
                 <div
+                  role="alert"
+                  className="fp-tela"
                   style={{
                     background: "#fee2e2",
                     color: "#b91c1c",
@@ -237,7 +274,8 @@ export default function Login({
               ) : null}
 
               <button
-                onClick={fazerLogin}
+                type="button"
+                onClick={() => void fazerLogin()}
                 disabled={carregando}
                 style={{
                   width: "100%",
@@ -251,7 +289,14 @@ export default function Login({
                   cursor: "pointer",
                 }}
               >
-                {carregando ? "Entrando..." : "Entrar"}
+                {carregando ? (
+                  <>
+                    <span className="fp-spinner" aria-hidden="true" />
+                    Entrando...
+                  </>
+                ) : (
+                  "Entrar"
+                )}
               </button>
             </div>
           </div>

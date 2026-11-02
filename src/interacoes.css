@@ -1,0 +1,199 @@
+/* Interacoes globais do app de campo: retorno visual ao tocar, foco e transicoes. */
+
+html { -webkit-tap-highlight-color: transparent; }
+
+button,
+a,
+summary,
+[role="button"] {
+  touch-action: manipulation; /* remove o atraso de toque duplo no celular */
+}
+
+button {
+  transition:
+    transform 0.12s ease,
+    filter 0.15s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    opacity 0.2s ease;
+}
+
+/* Toque: o botao "afunda" e escurece um pouco, dando a sensacao de clique. */
+button:not(:disabled):active {
+  transform: scale(0.96);
+  filter: brightness(0.92);
+}
+
+@media (hover: hover) {
+  button:not(:disabled):hover {
+    filter: brightness(1.06);
+    box-shadow: 0 4px 14px rgba(10, 58, 99, 0.16);
+  }
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(14, 165, 233, 0.55);
+  outline-offset: 2px;
+}
+
+/* Desabilitado fica claramente indisponivel, em qualquer tela. */
+button:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.45 !important;
+  filter: grayscale(0.35);
+  box-shadow: none !important;
+}
+
+input,
+textarea {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+textarea:focus,
+input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+}
+
+/* Entrada suave de cada tela. Termina sem transform, para nao afetar elementos fixos. */
+.fp-tela {
+  animation: fp-tela-entrar 0.24s ease-out both;
+}
+
+@keyframes fp-tela-entrar {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Barra inferior: aba ativa com indicador animado e icone em destaque. */
+.fp-bottom-nav button {
+  position: relative;
+}
+
+.fp-bottom-nav button .fp-nav-icone {
+  display: inline-block;
+  font-size: 20px;
+  line-height: 1;
+  transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+
+.fp-bottom-nav button.is-active .fp-nav-icone {
+  transform: translateY(-2px) scale(1.15);
+}
+
+.fp-bottom-nav button::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: #0a3a63;
+  transform: translateX(-50%);
+  transition: width 0.25s ease;
+}
+
+.fp-bottom-nav button.is-active::after {
+  width: 28px;
+}
+
+.fp-badge {
+  position: absolute;
+  top: 2px;
+  right: calc(50% - 22px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ea580c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 18px;
+  animation: fp-pulsar 1.8s ease-in-out infinite;
+}
+
+@keyframes fp-pulsar {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+/* Indicador de carregamento para botoes ("Salvando...", "Enviando..."). */
+.fp-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: fp-girar 0.7s linear infinite;
+}
+
+@keyframes fp-girar {
+  to { transform: rotate(360deg); }
+}
+
+/* Alfinete "voce esta aqui": pulso suave mostrando que o GPS esta ativo. */
+.custom-user-marker > div > div:first-child {
+  animation: fp-gps-pulso 2s ease-out infinite;
+}
+
+@keyframes fp-gps-pulso {
+  0% { transform: scale(0.6); opacity: 0.9; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+/* Aviso de motivo para botoes bloqueados */
+.fp-dica-bloqueio {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  animation: fp-tela-entrar 0.2s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Cartoes tocaveis (equipes, demandas): entram em cascata e respondem ao toque. */
+.fp-cartao-toque {
+  animation: fp-tela-entrar 0.3s ease-out both;
+}
+
+@media (hover: hover) {
+  .fp-cartao-toque:hover {
+    transform: translateY(-2px);
+    filter: none !important;
+    box-shadow: 0 10px 24px rgba(10, 58, 99, 0.16) !important;
+  }
+}
+
+/* Esqueleto de carregamento */
+.fp-esqueleto {
+  background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 50%, #e2e8f0 100%);
+  background-size: 200% 100%;
+  animation: fp-brilho 1.2s ease-in-out infinite;
+}
+
+@keyframes fp-brilho {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
