@@ -425,3 +425,44 @@ export function removerFotoDeLevantamentoPendente(localId: number, indiceFoto: n
     .filter((pendente) => pendente.fotos.length > 0);
   salvarLevantamentosPendentes(atualizados);
 }
+
+// ---------------------------------------------------------------------------
+// Conclusoes de levantamento feitas sem internet. Sao enviadas na sincronizacao,
+// depois dos pontos da mesma demanda.
+
+export type ConclusaoPendente = {
+  id_solicitacao: number;
+  solicitacao: string;
+  data_conclusao: string;
+};
+
+const CHAVE_CONCLUSOES = "fieldpro_conclusoes_pendentes";
+
+export function carregarConclusoesPendentes() {
+  return lerJson<ConclusaoPendente[]>(CHAVE_CONCLUSOES, []);
+}
+
+export function adicionarConclusaoPendente(conclusao: ConclusaoPendente) {
+  const atuais = carregarConclusoesPendentes().filter(
+    (item) => item.id_solicitacao !== conclusao.id_solicitacao
+  );
+  if (!salvarJson(CHAVE_CONCLUSOES, [...atuais, conclusao])) {
+    throw new Error("Armazenamento do aparelho cheio. Não foi possível guardar a conclusão.");
+  }
+}
+
+export function removerConclusaoPendente(idSolicitacao: number) {
+  salvarJson(
+    CHAVE_CONCLUSOES,
+    carregarConclusoesPendentes().filter((item) => item.id_solicitacao !== idSolicitacao)
+  );
+}
+
+export function conclusaoEstaPendente(idSolicitacao: number) {
+  return carregarConclusoesPendentes().some((item) => item.id_solicitacao === idSolicitacao);
+}
+
+/** Tudo que ainda precisa subir: pontos coletados + conclusoes. */
+export function contarPendenciasEnvio() {
+  return contarLevantamentosPendentes() + carregarConclusoesPendentes().length;
+}

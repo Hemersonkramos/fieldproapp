@@ -20,6 +20,7 @@ import {
   adicionarLevantamentoPendente,
   adicionarPontoCache,
   carregarAnexosCache,
+  adicionarConclusaoPendente,
   carregarLevantamentosPendentes,
   carregarPosicaoAtual,
   guardarFotosPendentes,
@@ -35,12 +36,15 @@ import {
 } from "../lib/offlineStorage";
 import { API_BASE_URL, authFetch, authUrl } from "../lib/api";
 import { confirmar, mensagemDeErro, notificar } from "../lib/feedback";
+import { lerAnexoOffline } from "../lib/fotosOffline";
 
 type Anexo = CachedAttachment;
 type PontoColetado = CachedPoint;
 
 type Props = {
   demanda: Demanda;
+  /** Atualiza a demanda na lista do app (ex.: status Concluida). */
+  atualizarDemanda?: (demanda: Demanda) => void;
   voltar: () => void;
   abrirGaleria: () => void;
   modoDemonstracao?: boolean;
@@ -246,17 +250,59 @@ function SelecionarPontoNoMapa({
 
 export default function Atendimento({
   demanda,
+  atualizarDemanda,
   voltar,
   abrirGaleria,
   modoDemonstracao = false,
 }: Props) {
   const inputFotosRef = useRef<HTMLInputElement | null>(null);
   const coletaLocalizacaoIdRef = useRef(0);
+  // Anexos baixados no aparelho (IndexedDB): caminho -> endereco local do arquivo.
+  const [anexosLocais, setAnexosLocais] = useState<Record<string, string>>({});
   const [rascunhoInicial] = useState(() =>
     carregarRascunhoColeta(demanda.id)
   );
 
   const [anexos, setAnexos] = useState<Anexo[]>([]);
+
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const atualizar = () => setOnline(navigator.onLine);
+    window.addEventListener("online", atualizar);
+    window.addEventListener("offline", atualizar);
+    return () => {
+      window.removeEventListener("online", atualizar);
+      window.removeEventListener("offline", atualizar);
+    };
+  }, []);
+
+  // Abre os anexos a partir do aparelho quando ja foram baixados (pre-carregamento).
+  useEffect(() => {
+    let ativo = true;
+    const enderecos: string[] = [];
+
+    void Promise.all(
+      anexos.map(async (anexo) => {
+        const arquivo = await lerAnexoOffline(anexo.caminho_arquivo);
+        if (!arquivo) return null;
+        const endereco = URL.createObjectURL(arquivo);
+        enderecos.push(endereco);
+        return [anexo.caminho_arquivo, endereco] as const;
+      })
+    ).then((pares) => {
+      if (!ativo) return;
+      const mapa: Record<string, string> = {};
+      pares.forEach((par) => {
+        if (par) mapa[par[0]] = par[1];
+      });
+      setAnexosLocais(mapa);
+    });
+
+    return () => {
+      ativo = false;
+      enderecos.forEach((endereco) => URL.revokeObjectURL(endereco));
+    };
+  }, [anexos]);
   const [pontosColetados, setPontosColetados] = useState<PontoColetado[]>([]);
   const [latitude, setLatitude] = useState<number | null>(
     rascunhoInicial?.latitude ?? null
@@ -806,36 +852,59 @@ export default function Atendimento({
       return;
     }
 
-    // Pontos desta demanda ainda no aparelho: concluir antes de sincronizar faria
-    // o escritorio receber a demanda concluida sem esses pontos.
+    const dataConclusao = new Date().toISOString();
     const pendentesDaDemanda = carregarLevantamentosPendentes().filter(
       (pendente) => pendente.id_solicitacao === demanda.id
     ).length;
 
-    if (pendentesDaDemanda > 0) {
+    // Sem internet, ou com pontos desta demanda ainda no aparelho: a conclusao fica
+    // guardada e e enviada na sincronizacao, DEPOIS dos pontos (o escritorio nunca
+    // recebe a demanda concluida sem os pontos).
+    const concluirNoAparelho = () => {
+      adicionarConclusaoPendente({
+        id_solicitacao: demanda.id,
+        solicitacao: demanda.solicitacao,
+        data_conclusao: dataConclusao,
+      });
+      atualizarDemanda?.({ ...demanda, status: "Concluida" });
       notificar(
-        `Existem ${pendentesDaDemanda} ponto(s) desta demanda guardados no aparelho. Sincronize antes de concluir.`,
-        "aviso"
+        pendentesDaDemanda > 0
+          ? `Levantamento concluído no aparelho. Será enviado junto com ${pendentesDaDemanda} ponto(s) na próxima sincronização.`
+          : "Levantamento concluído no aparelho. Será enviado na próxima sincronização.",
+        "sucesso"
       );
-      return;
-    }
-
-    if (!navigator.onLine) {
-      notificar("Sem internet. Conecte-se para concluir o levantamento.", "aviso");
-      return;
-    }
+      setMensagem("Levantamento concluído. Aguardando sincronização.");
+      setTimeout(voltar, 900);
+    };
 
     try {
       setConcluindo(true);
-      const resposta = await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`, {
-        method: "PUT",
-      });
+
+      if (!navigator.onLine || pendentesDaDemanda > 0) {
+        concluirNoAparelho();
+        return;
+      }
+
+      let resposta: Response;
+      try {
+        resposta = await authFetch(`${API_BASE_URL}/solicitacoes/${demanda.id}/concluir`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data_conclusao: dataConclusao }),
+        });
+      } catch {
+        // Caiu a conexao no meio: guarda no aparelho em vez de perder a conclusao.
+        concluirNoAparelho();
+        return;
+      }
+
       const dados = await resposta.json().catch(() => ({}));
 
       if (!resposta.ok) {
         throw new Error(dados.erro || "Não foi possível concluir o levantamento.");
       }
 
+      atualizarDemanda?.(dados.demanda ?? { ...demanda, status: "Concluida" });
       notificar("Levantamento concluído e enviado ao escritório.", "sucesso");
       setMensagem("Levantamento concluído.");
       setTimeout(voltar, 800);
@@ -1032,16 +1101,42 @@ export default function Atendimento({
                 Nenhum anexo disponivel.
               </div>
             ) : (
-              anexos.map((anexo) => (
-                <a
-                  key={anexo.id}
-                  href={authUrl(anexo.caminho_arquivo)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {anexo.nome_arquivo}
-                </a>
-              ))
+              anexos.map((anexo) => {
+                // Preferencia pelo arquivo salvo no aparelho: abre mesmo sem internet.
+                const local = anexosLocais[anexo.caminho_arquivo];
+                const indisponivel = !local && !online;
+
+                return (
+                  <a
+                    key={anexo.id}
+                    href={indisponivel ? undefined : local ?? authUrl(anexo.caminho_arquivo)}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-disabled={indisponivel}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      marginTop: 6,
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      background: indisponivel ? "#f1f5f9" : "#eff6ff",
+                      color: indisponivel ? "#94a3b8" : "#1d4ed8",
+                      fontWeight: 600,
+                      textDecoration: "none",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                      📎 {anexo.nome_arquivo}
+                    </span>
+                    <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: local ? "#15803d" : "#94a3b8" }}>
+                      {local ? "✓ no aparelho" : indisponivel ? "precisa de internet" : ""}
+                    </span>
+                  </a>
+                );
+              })
             )}
           </div>
 

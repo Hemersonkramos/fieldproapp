@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { contarLevantamentosPendentes } from "../lib/offlineStorage";
+import { contarPendenciasEnvio } from "../lib/offlineStorage";
 
 type Tela = "inicio" | "demandas" | "mapa" | "sincronizacao";
 
@@ -17,7 +17,7 @@ const ABAS: Array<{ tela: Tela; icone: string; rotulo: string }> = [
 
 function contarPendentes() {
   try {
-    return contarLevantamentosPendentes();
+    return contarPendenciasEnvio();
   } catch {
     return 0;
   }

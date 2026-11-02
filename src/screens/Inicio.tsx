@@ -11,7 +11,7 @@ import L from "leaflet";
 import type { Demanda, UsuarioLogado } from "../App";
 import BottomNav from "../components/BottomNav";
 import {
-  contarLevantamentosPendentes,
+  contarPendenciasEnvio,
   carregarPontosRotaPendentes,
   carregarPosicaoAtual,
 } from "../lib/offlineStorage";
@@ -207,7 +207,7 @@ export default function Inicio({
   const [pendenciasSincronizacao, setPendenciasSincronizacao] = useState(
     () =>
       carregarPontosRotaPendentes(usuario.id_equipe).length +
-      contarLevantamentosPendentes()
+      contarPendenciasEnvio()
   );
 
   const andamento = demandas.filter((d) =>
@@ -234,7 +234,7 @@ export default function Inicio({
     function atualizarPendencias() {
       setPendenciasSincronizacao(
         carregarPontosRotaPendentes(usuario.id_equipe).length +
-          contarLevantamentosPendentes()
+          contarPendenciasEnvio()
       );
     }
 

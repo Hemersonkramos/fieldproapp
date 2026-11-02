@@ -4,6 +4,8 @@
 
 const NOME_BANCO = "fieldpro-offline";
 const LOJA = "fotos";
+// Anexos das solicitacoes (PDF/fotos) baixados para consulta offline.
+const LOJA_ANEXOS = "anexos";
 export const PREFIXO_FOTO_LOCAL = "idb:";
 
 let bancoPromessa: Promise<IDBDatabase> | null = null;
@@ -15,10 +17,14 @@ function abrirBanco() {
         reject(new Error("IndexedDB indisponível neste navegador."));
         return;
       }
-      const pedido = indexedDB.open(NOME_BANCO, 1);
+      // Versao 2: inclui a loja de anexos (quem ja tinha a versao 1 so ganha a loja nova).
+      const pedido = indexedDB.open(NOME_BANCO, 2);
       pedido.onupgradeneeded = () => {
         if (!pedido.result.objectStoreNames.contains(LOJA)) {
           pedido.result.createObjectStore(LOJA);
+        }
+        if (!pedido.result.objectStoreNames.contains(LOJA_ANEXOS)) {
+          pedido.result.createObjectStore(LOJA_ANEXOS);
         }
       };
       pedido.onsuccess = () => resolve(pedido.result);
@@ -32,12 +38,16 @@ function abrirBanco() {
   return bancoPromessa;
 }
 
-function executar<T>(modo: IDBTransactionMode, acao: (loja: IDBObjectStore) => IDBRequest<T> | void) {
+function executar<T>(
+  modo: IDBTransactionMode,
+  acao: (loja: IDBObjectStore) => IDBRequest<T> | void,
+  nomeLoja: string = LOJA
+) {
   return abrirBanco().then(
     (banco) =>
       new Promise<T | undefined>((resolve, reject) => {
-        const transacao = banco.transaction(LOJA, modo);
-        const pedido = acao(transacao.objectStore(LOJA));
+        const transacao = banco.transaction(nomeLoja, modo);
+        const pedido = acao(transacao.objectStore(nomeLoja));
         transacao.oncomplete = () => resolve(pedido ? pedido.result : undefined);
         transacao.onerror = () => reject(transacao.error ?? new Error("Erro no IndexedDB."));
         transacao.onabort = () => reject(transacao.error ?? new Error("Gravação no IndexedDB cancelada."));
@@ -74,5 +84,30 @@ export async function resolverFotoLocal(dataUrl?: string) {
     return await lerFotoOffline(dataUrl.slice(PREFIXO_FOTO_LOCAL.length));
   } catch {
     return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Anexos (arquivo inteiro como Blob), chave = caminho do arquivo na API.
+
+export function salvarAnexoOffline(caminho: string, arquivo: Blob) {
+  return executar("readwrite", (loja) => loja.put(arquivo, caminho), LOJA_ANEXOS).then(() => undefined);
+}
+
+export async function lerAnexoOffline(caminho: string) {
+  try {
+    const valor = await executar<Blob>("readonly", (loja) => loja.get(caminho), LOJA_ANEXOS);
+    return valor instanceof Blob ? valor : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function temAnexoOffline(caminho: string) {
+  try {
+    const total = await executar<number>("readonly", (loja) => loja.count(caminho), LOJA_ANEXOS);
+    return (total ?? 0) > 0;
+  } catch {
+    return false;
   }
 }

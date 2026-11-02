@@ -10,7 +10,8 @@ import Sincronizacao from "./screens/Sincronizacao";
 import Fotos from "./screens/Fotos";
 import {
   carregarDemandasCache,
-  contarLevantamentosPendentes,
+  carregarConclusoesPendentes,
+  contarPendenciasEnvio,
   carregarPontosRotaPendentes,
   carregarPosicaoAtual,
   carregarRotaPlanejada,
@@ -29,6 +30,7 @@ import {
 } from "./lib/api";
 import { useSessaoInatividade } from "./lib/useSessaoInatividade";
 import { FeedbackHost } from "./components/Feedback";
+import { preCarregarDemandas } from "./lib/preCarregamento";
 import AvisoGps from "./components/AvisoGps";
 import { mensagemDeErro, notificar } from "./lib/feedback";
 
@@ -233,6 +235,33 @@ function montarEstadoInicial(): EstadoInicial {
   return { tela, usuario, demandas, demandaSelecionada, equipe: equipeDoUsuario(usuario) };
 }
 
+/** Mantem como "Concluida" as demandas concluidas offline que ainda nao subiram. */
+function aplicarConclusoesLocais(demandas: Demanda[]) {
+  const pendentes = new Set(carregarConclusoesPendentes().map((item) => item.id_solicitacao));
+  if (pendentes.size === 0) return demandas;
+  return demandas.map((demanda) =>
+    pendentes.has(demanda.id) && ["Andamento", "Devolvida"].includes(demanda.status)
+      ? { ...demanda, status: "Concluida" as const }
+      : demanda
+  );
+}
+
+/** Baixa anexos e pontos das demandas abertas para consulta sem internet. */
+async function baixarParaUsoOffline(demandas: Demanda[]) {
+  if (MODO_PREVIEW || !navigator.onLine || demandas.length === 0) return;
+  try {
+    const resultado = await preCarregarDemandas(demandas);
+    if (resultado.arquivosNovos > 0) {
+      notificar(
+        `${resultado.arquivosNovos} anexo(s) das demandas salvos no aparelho para consulta offline.`,
+        "sucesso"
+      );
+    }
+  } catch (erro) {
+    console.warn("Pré-carregamento offline falhou:", erro);
+  }
+}
+
 export default function App() {
   const [estadoInicial] = useState(montarEstadoInicial);
   const [tela, setTela] = useState<Tela>(estadoInicial.tela);
@@ -258,6 +287,12 @@ export default function App() {
   const ultimoPontoRotaEmRef = useRef<number | null>(null);
   const ultimaPosicaoGravadaEmRef = useRef(0);
 
+  // Demandas atuais para uso fora do ciclo de render (evento "online").
+  const demandasRef = useRef<Demanda[]>(demandas);
+  useEffect(() => {
+    demandasRef.current = demandas;
+  }, [demandas]);
+
   // Avisa quando a internet cai e quando volta com levantamentos esperando envio.
   useEffect(() => {
     if (MODO_PREVIEW) return;
@@ -266,13 +301,15 @@ export default function App() {
       notificar("Sem internet. Pode continuar coletando: os pontos ficam salvos no aparelho.", "aviso");
     };
     const aoFicarOnline = () => {
-      const pendentes = contarLevantamentosPendentes();
+      const pendentes = contarPendenciasEnvio();
       notificar(
         pendentes > 0
-          ? `Internet de volta. ${pendentes} ponto(s) aguardando envio: abra a aba Sync para sincronizar.`
+          ? `Internet de volta. ${pendentes} item(ns) aguardando envio: abra a aba Sync para sincronizar.`
           : "Internet de volta.",
         pendentes > 0 ? "info" : "sucesso"
       );
+      // Aproveita a conexao para baixar anexos que faltarem.
+      void baixarParaUsoOffline(demandasRef.current);
     };
 
     window.addEventListener("offline", aoFicarOffline);
@@ -553,8 +590,11 @@ export default function App() {
         }
 
         if (ativo) {
-          setDemandas(dados);
-          salvarDemandasCache(idEquipeAtual, dados);
+          // Conclusoes feitas offline ainda nao enviadas continuam como "Concluida" na tela.
+          const comConclusoesLocais = aplicarConclusoesLocais(dados as Demanda[]);
+          setDemandas(comConclusoesLocais);
+          salvarDemandasCache(idEquipeAtual, comConclusoesLocais);
+          void baixarParaUsoOffline(comConclusoesLocais);
         }
       } catch (error) {
         console.error(error);
@@ -607,6 +647,19 @@ export default function App() {
     setDemandaSelecionada((prev) =>
       prev?.id === demandaAtualizada.id ? demandaAtualizada : prev
     );
+  }
+
+  /** Atualiza uma demanda na tela e no cache do aparelho (ex.: concluida offline). */
+  function atualizarDemandaLocal(demandaAtualizada: Demanda) {
+    atualizarDemanda(demandaAtualizada);
+    if (usuario?.id_equipe) {
+      salvarDemandasCache(
+        usuario.id_equipe,
+        carregarDemandasCache(usuario.id_equipe).map((demanda) =>
+          demanda.id === demandaAtualizada.id ? demandaAtualizada : demanda
+        )
+      );
+    }
   }
 
   function abrirDemanda(demanda: Demanda) {
@@ -695,6 +748,7 @@ export default function App() {
       {tela === "atendimento" && demandaSelecionada && (
         <Atendimento
           demanda={demandaSelecionada}
+          atualizarDemanda={atualizarDemandaLocal}
           modoDemonstracao={MODO_PREVIEW}
           voltar={() => setTela("demandas")}
           abrirGaleria={() => setTela("fotos")}

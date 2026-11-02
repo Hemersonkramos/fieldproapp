@@ -2,9 +2,11 @@ import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import BottomNav from "../components/BottomNav";
 import {
+  carregarConclusoesPendentes,
   carregarLevantamentosPendentes,
   carregarPontosRotaPendentes,
   contarFotosPendentes,
+  removerConclusaoPendente,
   removerLevantamentoPendente,
   salvarPontosRotaPendentes,
 } from "../lib/offlineStorage";
@@ -114,6 +116,7 @@ export default function Sincronizacao({
     () => carregarLevantamentosPendentes().length
   );
   const [fotosPendentes, setFotosPendentes] = useState(contarFotosPendentes);
+  const [conclusoesPendentes, setConclusoesPendentes] = useState(carregarConclusoesPendentes);
   const [mensagem, setMensagem] = useState("");
   const [sincronizando, setSincronizando] = useState(false);
   const [progresso, setProgresso] = useState(0);
@@ -125,6 +128,7 @@ export default function Sincronizacao({
     setPontosPendentes(idEquipe ? carregarPontosRotaPendentes(idEquipe) : []);
     setLevantamentosPendentes(carregarLevantamentosPendentes().length);
     setFotosPendentes(contarFotosPendentes());
+    setConclusoesPendentes(carregarConclusoesPendentes());
   }
 
   async function sincronizarAgora() {
@@ -152,9 +156,13 @@ export default function Sincronizacao({
       levantamentosAtuais.reduce((total, levantamento) => total + levantamento.fotos.length, 0)
     );
 
+    const conclusoesAtuais = carregarConclusoesPendentes();
+    setConclusoesPendentes(conclusoesAtuais);
+
     if (
       pontosRotaAtuais.length === 0 &&
-      levantamentosAtuais.length === 0
+      levantamentosAtuais.length === 0 &&
+      conclusoesAtuais.length === 0
     ) {
       setMensagem("Nao existem dados pendentes para sincronizar.");
       return;
@@ -165,7 +173,8 @@ export default function Sincronizacao({
       setProgresso(0);
       setMensagem("Sincronizando dados...");
 
-      const totalEtapas = pontosRotaAtuais.length + levantamentosAtuais.length;
+      const totalEtapas =
+        pontosRotaAtuais.length + levantamentosAtuais.length + conclusoesAtuais.length;
       let etapasConcluidas = 0;
       const pontosRotaFalhados: typeof pontosRotaAtuais = [];
       const atualizarProgresso = () => {
@@ -271,6 +280,35 @@ export default function Sincronizacao({
         atualizarProgresso();
       }
 
+      // Conclusoes feitas sem internet: so depois que todos os pontos subiram
+      // (se algum ponto falhar, o loop acima interrompe e nada e concluido).
+      for (const conclusao of conclusoesAtuais) {
+        setMensagem(`Concluindo a solicitação ${conclusao.solicitacao}...`);
+
+        const resposta = await authFetchComTimeout(
+          `${API_BASE_URL}/solicitacoes/${conclusao.id_solicitacao}/concluir`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data_conclusao: conclusao.data_conclusao }),
+          },
+          TIMEOUT_LEVANTAMENTO_MS
+        );
+        const dados = await resposta.json().catch(() => ({}));
+
+        // 400: ja estava concluida/finalizada no servidor; 404: solicitacao removida.
+        // Nos dois casos nao ha o que reenviar.
+        if (!resposta.ok && resposta.status !== 400 && resposta.status !== 404) {
+          throw new Error(dados.erro || `Erro ao concluir a solicitação ${conclusao.solicitacao}.`);
+        }
+        if (resposta.status === 404) {
+          notificar(`A solicitação ${conclusao.solicitacao} não existe mais no escritório.`, "aviso");
+        }
+
+        removerConclusaoPendente(conclusao.id_solicitacao);
+        atualizarProgresso();
+      }
+
       const agora = new Date().toLocaleString("pt-BR", {
         day: "2-digit",
         month: "2-digit",
@@ -297,7 +335,7 @@ export default function Sincronizacao({
   }
 
   const totalPendencias =
-    pontosPendentes.length + levantamentosPendentes + fotosPendentes;
+    pontosPendentes.length + levantamentosPendentes + fotosPendentes + conclusoesPendentes.length;
   const progressoAtual = totalPendencias === 0 ? 100 : progresso;
 
   return (
@@ -423,6 +461,24 @@ export default function Sincronizacao({
                 Levantamentos pendentes
               </div>
               <strong style={{ fontSize: 28 }}>{levantamentosPendentes}</strong>
+            </div>
+
+            <div
+              style={{
+                background: "#f1f5f9",
+                borderRadius: 20,
+                padding: 16,
+              }}
+            >
+              <div style={{ fontSize: 13, color: "#64748b" }}>
+                Conclusões pendentes
+              </div>
+              <strong style={{ fontSize: 28 }}>{conclusoesPendentes.length}</strong>
+              {conclusoesPendentes.length > 0 && (
+                <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+                  {conclusoesPendentes.map((item) => item.solicitacao).join(", ")}
+                </div>
+              )}
             </div>
           </div>
 
