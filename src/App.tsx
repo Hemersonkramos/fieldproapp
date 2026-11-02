@@ -29,6 +29,7 @@ import {
 } from "./lib/api";
 import { useSessaoInatividade } from "./lib/useSessaoInatividade";
 import { FeedbackHost } from "./components/Feedback";
+import AvisoGps from "./components/AvisoGps";
 import { mensagemDeErro, notificar } from "./lib/feedback";
 
 const INTERVALO_PONTO_ROTA_MS = 3 * 60 * 1000;
@@ -621,6 +622,8 @@ export default function App() {
   return (
     <>
       <FeedbackHost />
+      {/* Ao entrar logado, pede para ligar o GPS se a localizacao estiver desligada. */}
+      <AvisoGps ativo={!MODO_PREVIEW && Boolean(usuario) && tela !== "login"} />
       {/* key={tela}: cada troca de tela entra com uma animacao curta */}
       <div key={tela} className="fp-tela" style={{ flex: 1, width: "100%" }}>
       {tela === "splash" && (

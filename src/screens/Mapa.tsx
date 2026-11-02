@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Popup,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet-routing-machine";
@@ -206,64 +207,126 @@ function corDoAlfinete(demanda: Demanda) {
   return "#eab308";
 }
 
+/**
+ * Rota "por ruas" (como no Google Maps). O controle de rota e criado uma vez e so
+ * recebe novos pontos quando a lista da rota muda ou a equipe anda bastante, em vez
+ * de ser apagado e recriado a cada atualizacao da tela (o que fazia o mapa piscar e
+ * a linha do caminho sumir).
+ */
 function RotaPorRuas({ origem, rotaSelecionada, acompanhar }: RoutingProps) {
   const map = useMap();
+  const controleRef = useRef<L.Routing.Control | null>(null);
+  const acompanharRef = useRef(acompanhar);
+  useEffect(() => {
+    acompanharRef.current = acompanhar;
+  }, [acompanhar]);
+
+  // Chave estavel dos pontos: so muda quando a rota realmente muda.
+  const chavePontos = [
+    origem ? `${origem[0].toFixed(5)},${origem[1].toFixed(5)}` : "-",
+    ...rotaSelecionada.map((d) => `${d.id}:${d.latitude},${d.longitude}`),
+  ].join("|");
 
   useEffect(() => {
-    // Com GPS ligado a rota sai da posicao da equipe; desligado, liga as demandas entre si.
     const waypoints = [
       ...(origem ? [L.latLng(origem[0], origem[1])] : []),
-      ...rotaSelecionada.map((d) =>
-        L.latLng(Number(d.latitude), Number(d.longitude))
-      ),
+      ...rotaSelecionada.map((d) => L.latLng(Number(d.latitude), Number(d.longitude))),
     ];
 
+    // Menos de dois pontos: nao ha rota a desenhar.
     if (waypoints.length < 2) {
+      if (controleRef.current) {
+        const interno = controleRef.current as unknown as { _requestCount?: number };
+        interno._requestCount = (interno._requestCount ?? 0) + 1;
+        map.removeControl(controleRef.current);
+        controleRef.current = null;
+      }
+      return;
+    }
+
+    if (controleRef.current) {
+      // Mesmo controle, pontos novos: a linha antiga so e trocada quando a nova chega.
+      controleRef.current.setWaypoints(waypoints);
       return;
     }
 
     const routing = L as LeafletRoutingNamespace;
-    const routingControl = routing.Routing.control({
+    const controle = routing.Routing.control({
       waypoints,
       routeWhileDragging: false,
       addWaypoints: false,
       draggableWaypoints: false,
-      fitSelectedRoutes: !acompanhar,
+      fitSelectedRoutes: false,
       show: false,
       createMarker: () => null,
       lineOptions: routeLineOptions,
     }).addTo(map);
 
+    // Enquadra a rota inteira so quando nao esta seguindo a posicao da equipe.
+    controle.on("routesfound", (evento: { routes?: Array<{ coordinates?: L.LatLng[] }> }) => {
+      const coordenadas = evento.routes?.[0]?.coordinates;
+      if (!acompanharRef.current && coordenadas && coordenadas.length > 1) {
+        map.fitBounds(L.latLngBounds(coordenadas), { padding: [40, 40], maxZoom: 16 });
+      }
+    });
+
+    controleRef.current = controle;
+    // Os pontos chegam pela chave; o efeito so roda de novo quando ela muda.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chavePontos, map]);
+
+  // Remove o controle ao sair da tela.
+  useEffect(() => {
     return () => {
-      // A biblioteca nao cancela o calculo de rota em andamento ao ser removida; quando
-      // a resposta chegava, tentava desenhar num mapa ja removido ("removeLayer" de null).
-      // Incrementar o contador interno faz ela ignorar essa resposta atrasada.
-      const interno = routingControl as unknown as { _requestCount?: number };
-      interno._requestCount = (interno._requestCount ?? 0) + 1;
-      map.removeControl(routingControl);
+      if (controleRef.current) {
+        // A biblioteca nao cancela o calculo em andamento; isto faz ela ignorar a resposta.
+        const interno = controleRef.current as unknown as { _requestCount?: number };
+        interno._requestCount = (interno._requestCount ?? 0) + 1;
+        map.removeControl(controleRef.current);
+        controleRef.current = null;
+      }
     };
-  }, [acompanhar, map, origem, rotaSelecionada]);
+  }, [map]);
 
   return null;
 }
 
-function CentralizarMapa({
-  centro,
-  acompanhar,
+/**
+ * Navegacao: com o GPS ligado o mapa acompanha a equipe. Se a pessoa arrastar o
+ * mapa, para de acompanhar (como no Google Maps) ate tocar em "Centralizar".
+ */
+function SeguirPosicao({
+  posicao,
+  seguindo,
+  aoArrastar,
 }: {
-  centro: [number, number];
-  acompanhar: boolean;
+  posicao: [number, number] | null;
+  seguindo: boolean;
+  aoArrastar: () => void;
 }) {
   const map = useMap();
+  const primeiroAjusteRef = useRef(true);
+
+  useMapEvents({
+    dragstart: aoArrastar,
+  });
 
   useEffect(() => {
-    if (acompanhar) {
-      map.setView(centro, Math.max(map.getZoom(), 18), { animate: true });
+    if (!seguindo) {
+      primeiroAjusteRef.current = true;
       return;
     }
+    if (!posicao) return;
 
-    map.setView(centro);
-  }, [acompanhar, centro, map]);
+    if (primeiroAjusteRef.current) {
+      // Ao ligar (ou recentralizar): aproxima na posicao da equipe.
+      map.setView(posicao, Math.max(map.getZoom(), 17), { animate: true });
+      primeiroAjusteRef.current = false;
+    } else {
+      // Depois so desliza suavemente, mantendo o zoom escolhido.
+      map.panTo(posicao, { animate: true, duration: 0.6 });
+    }
+  }, [map, posicao, seguindo]);
 
   return null;
 }
@@ -298,6 +361,8 @@ export default function Mapa({
     return () => window.clearTimeout(temporizador);
   }, [mensagem]);
   const [mostrarRota, setMostrarRota] = useState(false);
+  // Acompanhar a posicao no mapa (desliga quando a pessoa arrasta o mapa).
+  const [seguindo, setSeguindo] = useState(true);
 
   function adicionarNaRota(demanda: Demanda) {
     setRotaSelecionada((prev) => {
@@ -505,6 +570,7 @@ export default function Mapa({
 
     setMensagem("GPS ligado. Deslocamento iniciado.");
     setMostrarRota(false);
+    setSeguindo(true);
   }
 
   function pararDeslocamentoPersistente() {
@@ -587,6 +653,8 @@ export default function Mapa({
 
   const pontosPendentes = carregarPontosRotaPendentes(usuario.id_equipe);
   const demandasVisiveis = demandas.filter((d) => d.status !== "Finalizada");
+  // A rota por ruas usa uma chave estavel dos pontos (RotaPorRuas), entao esta lista
+  // pode ser recalculada a cada render sem refazer a rota.
   const rotaVisivel = rotaSelecionada.filter((d) => d.status !== "Finalizada");
   const centroMapa: [number, number] = posicao
     ? posicao
@@ -690,11 +758,15 @@ export default function Mapa({
 
       <div style={{ position: "absolute", inset: 0 }}>
           <MapContainer
-            zoom={deslocamentoAtivo ? 18 : 14}
+            zoom={deslocamentoAtivo ? 17 : 14}
             center={centroMapa}
             style={{ height: "100%", width: "100%" }}
           >
-            <CentralizarMapa centro={centroMapa} acompanhar={deslocamentoAtivo} />
+            <SeguirPosicao
+              posicao={deslocamentoAtivo ? posicaoGps : null}
+              seguindo={deslocamentoAtivo && seguindo}
+              aoArrastar={() => setSeguindo(false)}
+            />
             <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
             <TileLayer url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />
 
@@ -789,7 +861,7 @@ export default function Mapa({
               <RotaPorRuas
                 origem={origemRota}
                 rotaSelecionada={rotaVisivel}
-                acompanhar={deslocamentoAtivo}
+                acompanhar={deslocamentoAtivo && seguindo}
               />
             )}
           </MapContainer>
@@ -906,6 +978,38 @@ export default function Mapa({
           ))
         )}
         </div>
+      )}
+
+      {/* Como no Google Maps: depois de mover o mapa, este botao volta a acompanhar a equipe. */}
+      {deslocamentoAtivo && !seguindo && (
+        <button
+          type="button"
+          onClick={() => setSeguindo(true)}
+          aria-label="Centralizar na minha posição"
+          className="fp-tela"
+          style={{
+            position: "absolute",
+            left: 12,
+            bottom: 84,
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            height: 46,
+            padding: "0 16px",
+            borderRadius: 999,
+            border: "none",
+            background: "#1a73e8",
+            color: "white",
+            fontWeight: 800,
+            fontSize: 14,
+            cursor: "pointer",
+            boxShadow: "0 8px 20px rgba(26, 115, 232, 0.35)",
+          }}
+        >
+          <span aria-hidden="true" style={{ fontSize: 18 }}>◎</span>
+          Centralizar
+        </button>
       )}
 
       <div
